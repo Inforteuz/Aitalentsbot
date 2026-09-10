@@ -365,7 +365,7 @@ final class Flow
 
         $rows = [];
         $rows[] = Lang::t('profile.title', $locale);
-        $rows[] = Lang::t('profile.number', $locale, ['id' => (int) $registration['id']]);
+        $rows[] = Lang::t('profile.number', $locale, ['id' => (int) ($registration['id'] ?? 0)]);
         $rows[] = '';
 
         $rows[] = $this->line('full_name', 'profile.field_name', $locale, (string) ($registration['full_name'] ?? ''));
@@ -376,8 +376,10 @@ final class Flow
             Text::phoneDisplay((string) ($registration['phone'] ?? ''))
         );
 
-        if ($registration['birth_year'] !== null && (int) $registration['birth_year'] > 0) {
-            $rows[] = $this->line('birth_year', 'profile.field_birth_year', $locale, (string) $registration['birth_year']);
+        $birthYear = (int) ($registration['birth_year'] ?? 0);
+
+        if ($birthYear > 0) {
+            $rows[] = $this->line('birth_year', 'profile.field_birth_year', $locale, (string) $birthYear);
         }
 
         $district = (string) ($registration['district'] ?? '');
