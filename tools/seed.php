@@ -169,6 +169,16 @@ function seed_parse_args(array $argv): array
  */
 
 /**
+ * A controlled stop: the seeder refuses to touch this database.
+ *
+ * Thrown for expected situations (existing data, missing --fresh) so that the
+ * error handler can print a short message instead of a stack-trace style dump.
+ */
+final class SeedAbort extends RuntimeException
+{
+}
+
+/**
  * Generates a believable demo dataset for the admin panel and the bot.
  *
  * Everything it writes is identifiable so that --fresh can remove exactly the
@@ -377,7 +387,7 @@ final class AiTalentsSeeder
         ));
 
         if ($real > 0 && !$fresh) {
-            throw new RuntimeException(
+            throw new SeedAbort(
                 "The database already contains REAL data ("
                 . $counts['real_users'] . " user(s), " . $counts['real_regs'] . " registration(s)).\n"
                 . "  Refusing to touch it.\n\n"
@@ -390,7 +400,7 @@ final class AiTalentsSeeder
         }
 
         if ($seeded > 0 && !$fresh) {
-            throw new RuntimeException(
+            throw new SeedAbort(
                 "Demo data is already present (" . $counts['seed_users'] . " user(s), "
                 . $counts['seed_regs'] . " registration(s)).\n"
                 . "  Re-run with --fresh to replace it:\n"
@@ -541,7 +551,89 @@ final class AiTalentsSeeder
             $applicants[$position]['telegram_id'] = self::TG_FIRST + $position;
         }
 
+        return $this->moderate($applicants, $now);
+    }
+
+    /**
+     * Turn roughly 22% of the applications into "approved" and 8% into
+     * "rejected", leaving the rest pending.
+     *
+     * Quotas instead of per-row dice: the totals then really match the
+     * documented distribution no matter how small the batch is. Only
+     * applications older than two days can be reviewed — brand new ones stay
+     * pending, exactly like a real moderation queue.
+     *
+     * @param array<int,array<string,mixed>> $applicants
+     * @return array<int,array<string,mixed>>
+     */
+    private function moderate(array $applicants, int $now): array
+    {
+        $total = count($applicants);
+
+        if ($total === 0) {
+            return $applicants;
+        }
+
+        $eligible = [];
+
+        foreach ($applicants as $position => $applicant) {
+            if ((int) $applicant['created_ts'] <= $now - (2 * 86400)) {
+                $eligible[] = $position;
+            }
+        }
+
+        shuffle($eligible);
+
+        $approved = (int) round($total * 0.22);
+        $rejected = (int) round($total * 0.08);
+        $capacity = count($eligible);
+
+        if ($approved + $rejected > $capacity) {
+            $ratio    = $capacity / max(1, $approved + $rejected);
+            $approved = (int) floor($approved * $ratio);
+            $rejected = (int) floor($rejected * $ratio);
+        }
+
+        $handled = 0;
+
+        foreach ($eligible as $position) {
+            if ($handled >= $approved + $rejected) {
+                break;
+            }
+
+            $applicants[$position] = $this->review(
+                $applicants[$position],
+                $handled < $approved ? 'approved' : 'rejected',
+                $now
+            );
+
+            $handled++;
+        }
+
         return $applicants;
+    }
+
+    /**
+     * Stamp one application as reviewed by an admin.
+     *
+     * @param array<string,mixed> $applicant
+     * @return array<string,mixed>
+     */
+    private function review(array $applicant, string $status, int $now): array
+    {
+        $createdTs  = (int) $applicant['created_ts'];
+        $reviewedTs = min($now, $createdTs + mt_rand(2 * 3600, 5 * 86400));
+        $notes      = $status === 'approved' ? $this->approvedNotes() : $this->rejectedNotes();
+
+        $applicant['status']      = $status;
+        $applicant['reviewed_by'] = $this->reviewerId();
+        $applicant['reviewed_at'] = date('Y-m-d H:i:s', $reviewedTs);
+        $applicant['updated_at']  = date('Y-m-d H:i:s', $reviewedTs);
+        $applicant['admin_note']  = mt_rand(1, 100) <= ($status === 'approved' ? 45 : 85)
+            ? $this->pick($notes)
+            : null;
+
+        return $applicant;
     }
 
     /**
@@ -568,21 +660,7 @@ final class AiTalentsSeeder
 
         [$portfolio, $links] = $this->portfolio($first, $last, $directions);
 
-        $createdAt = date('Y-m-d H:i:s', $createdTs);
-        $status    = $this->status($createdTs, $now);
-
-        $reviewedTs = null;
-        $adminNote  = null;
-
-        if ($status !== 'pending') {
-            $reviewedTs = min($now, $createdTs + mt_rand(2 * 3600, 5 * 86400));
-            $notes      = $status === 'approved' ? $this->approvedNotes() : $this->rejectedNotes();
-
-            if (mt_rand(1, 100) <= ($status === 'approved' ? 45 : 85)) {
-                $adminNote = $this->pick($notes);
-            }
-        }
-
+        $createdAt  = date('Y-m-d H:i:s', $createdTs);
         $lastSeenTs = min($now, $createdTs + mt_rand(0, max(3600, $now - $createdTs)));
 
         return [
@@ -601,13 +679,13 @@ final class AiTalentsSeeder
             'direction_other' => in_array('other', $directions, true) ? $this->pick($this->otherDirections()) : null,
             'portfolio'       => $portfolio,
             'portfolio_links' => $links,
-            'status'          => $status,
-            'admin_note'      => $adminNote,
-            'reviewed_by'     => $status === 'pending' ? null : $this->reviewerId(),
-            'reviewed_at'     => $reviewedTs === null ? null : date('Y-m-d H:i:s', $reviewedTs),
+            'status'          => 'pending',
+            'admin_note'      => null,
+            'reviewed_by'     => null,
+            'reviewed_at'     => null,
             'created_ts'      => $createdTs,
             'created_at'      => $createdAt,
-            'updated_at'      => date('Y-m-d H:i:s', $reviewedTs ?? $createdTs),
+            'updated_at'      => $createdAt,
             'last_seen_at'    => date('Y-m-d H:i:s', $lastSeenTs),
         ];
     }
@@ -1389,19 +1467,6 @@ final class AiTalentsSeeder
     }
 
     /**
-     * pending / approved / rejected, weighted 70 / 22 / 8 with fresh
-     * applications staying mostly unreviewed.
-     */
-    private function status(int $createdTs, int $now): string
-    {
-        if ($createdTs > $now - (2 * 86400)) {
-            return mt_rand(1, 100) <= 92 ? 'pending' : 'approved';
-        }
-
-        return (string) $this->weighted(['pending' => 70, 'approved' => 22, 'rejected' => 8]);
-    }
-
-    /**
      * A Telegram-style username derived from the person's name.
      */
     private function username(string $first, string $last): string
@@ -1792,6 +1857,13 @@ try {
     $seeder = new AiTalentsSeeder($app, $options);
 
     exit($seeder->run());
+} catch (SeedAbort $e) {
+    seed_err('');
+    seed_err('-- Aborted ----------------------------------------------------');
+    seed_err('  ' . $e->getMessage());
+    seed_err('');
+
+    exit(1);
 } catch (InvalidArgumentException $e) {
     seed_err('');
     seed_err('Argument error: ' . $e->getMessage());

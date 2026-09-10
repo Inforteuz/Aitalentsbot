@@ -107,21 +107,11 @@ Ikki yo‘l bor, ikkalasi ham bir xil natija beradi:
 Buyruqni qayta ishga tushirish xavfsiz: allaqachon bajarilgan migratsiyalar `migrations`
 jadvalida qayd etilgan va takroran bajarilmaydi.
 
-### 8. Hostingda SSH yo‘q — CLI buyruqlarini qanday bajaraman?
-
-- cPanel → **Terminal** (ko‘p hostinglarda yoqilgan) — brauzerdan to‘g‘ridan-to‘g‘ri.
-- cPanel → **Cron Jobs** → vaqtni yaqin daqiqaga qo‘yib, buyruqni bir marta bajaring, so‘ng
-  cron’ni o‘chiring.
-- Migratsiya, webhook va parol xeshi kabi asosiy amallarni **`setup.php` orqali** bajarish mumkin —
-  terminal shart emas.
-
-`cli.php` brauzerdan ishlamaydi: u HTTP orqali chaqirilsa darhol to‘xtaydi (bu himoya chorasi).
-
 ---
 
 ## 🔗 Webhook
 
-### 9. Webhook’ni qanday o‘rnataman?
+### 8. Webhook’ni qanday o‘rnataman?
 
 ```bash
 php cli.php webhook:set https://domen.uz/bot/index.php
@@ -131,7 +121,7 @@ php cli.php webhook:info
 Yoki `setup.php?key=...` sahifasidagi **“Webhook”** panelidan `Set` tugmasini bosing (manzil
 `app.base_url` asosida o‘zi tuziladi). `app.base_url` oxirida `/` bo‘lmasligi kerak.
 
-### 10. Telegram “401 Unauthorized” qaytaryapti
+### 9. Telegram “401 Unauthorized” qaytaryapti
 
 Ikki xil holat bor:
 
@@ -142,7 +132,7 @@ Ikki xil holat bor:
   mos emas. `config.php` da secret’ni o‘zgartirgan bo‘lsangiz, webhook’ni **qaytadan** o‘rnating:
   `php cli.php webhook:set https://domen.uz/bot/index.php`.
 
-### 11. “409 Conflict: terminated by other getUpdates request”
+### 10. “409 Conflict: terminated by other getUpdates request”
 
 Bitta bot uchun bir vaqtda **webhook** ham, **long-polling** ham ishlayotganini bildiradi.
 Odatda kimdir `php cli.php poll` ni ishga tushirib, to‘xtatmagan bo‘ladi.
@@ -156,7 +146,7 @@ Aksincha, lokal test uchun `poll` kerak bo‘lsa: avval `php cli.php webhook:del
 Bir tokenni ikki serverda (test va ishlab chiqarish) parallel ishlatmang — **har biriga alohida bot**
 yarating.
 
-### 12. “SSL error”, “certificate verify failed”, “wrong version number”
+### 11. “SSL error”, “certificate verify failed”, “wrong version number”
 
 Telegram faqat haqiqiy, ishonchli (`Let’s Encrypt` ham bo‘ladi) sertifikatli HTTPS manzil bilan
 ishlaydi. Tekshiruvlar:
@@ -168,7 +158,7 @@ ishlaydi. Tekshiruvlar:
 
 Sertifikat yangilangach webhook’ni qayta o‘rnating.
 
-### 13. Webhook o‘rnatildi, lekin bot javob bermayapti
+### 12. Webhook o‘rnatildi, lekin bot javob bermayapti
 
 Tartib bilan tekshiring:
 
@@ -179,24 +169,24 @@ Tartib bilan tekshiring:
 4. `config.php` dagi `webhook_secret` webhook o‘rnatilgandagi qiymat bilan bir xilmi?
 5. Botni bloklab qo‘ymaganingizni tekshiring (Telegram’da chatni oching → `Restart bot`).
 
-### 14. `getWebhookInfo` dagi `last_error_message` nimani bildiradi?
+### 13. `getWebhookInfo` dagi `last_error_message` nimani bildiradi?
 
 | Xabar | Ma’nosi | Yechim |
 |-------|---------|--------|
-| `Wrong response from the webhook: 401 Unauthorized` | Secret mos emas | 10-savolga qarang |
+| `Wrong response from the webhook: 401 Unauthorized` | Secret mos emas | «Telegram 401 Unauthorized» savoliga qarang |
 | `Wrong response from the webhook: 404 Not Found` | Manzil xato | `webhook:set` da to‘g‘ri yo‘lni bering |
 | `Wrong response from the webhook: 500 Internal Server Error` | PHP xatosi | `data/logs/` va hosting error_log |
-| `SSL error ...` | Sertifikat muammosi | 12-savol |
+| `SSL error ...` | Sertifikat muammosi | «SSL error» savoli |
 | `Connection timed out` | Server sekin javob qaytaryapti | `index.php` darhol 200 qaytaradi; hosting yuklamasini tekshiring |
 | `Bad webhook: HTTPS url must be provided` | `http://` berilgan | HTTPS manzil kiriting |
 
 `last_error_date` — xato oxirgi marta qachon bo‘lgani. Muammo tuzatilgach, bu maydonlar yangi
 xabar kelganda o‘z-o‘zidan tozalanadi.
 
-### 15. `pending_update_count` juda katta (masalan 500+)
+### 14. `pending_update_count` juda katta (masalan 500+)
 
 Demak bot xabarlarni qabul qila olmayapti va ular Telegram serverida to‘planib qolgan.
-Avval sababini bartaraf eting (13–14-savollar), so‘ng navbatni tozalang:
+Avval sababini bartaraf eting (webhook bo‘limidagi tekshiruv ro‘yxati va `last_error_message` jadvali), so‘ng navbatni tozalang:
 
 ```bash
 php cli.php webhook:delete            # eski navbat bilan
@@ -206,22 +196,11 @@ php cli.php webhook:set https://domen.uz/bot/index.php
 > ⚠️ Navbatni tozalash foydalanuvchilarning to‘planib qolgan xabarlarini yo‘qotadi — ro‘yxatdan
 > o‘tayotgan odam qadamni qaytadan yozishi kerak bo‘lishi mumkin. Arizalar bazasiga ta’sir qilmaydi.
 
-### 16. Lokal kompyuterda HTTPS’siz test qilsa bo‘ladimi?
-
-Ha. Webhook o‘rniga long-polling ishlating:
-
-```bash
-php cli.php webhook:delete
-php cli.php poll
-```
-
-Test tugagach `Ctrl+C` bosing va webhook’ni qayta o‘rnating (aks holda 409 Conflict chiqadi).
-
 ---
 
 ## 💬 Bot ishlashi
 
-### 17. Bot butunlay javob bermayapti — nimadan boshlayman?
+### 15. Bot butunlay javob bermayapti — nimadan boshlayman?
 
 Qisqa tekshiruv ro‘yxati:
 
@@ -233,7 +212,7 @@ Qisqa tekshiruv ro‘yxati:
 - [ ] Juda ko‘p xabar yubormadingizmi — `security.rate_limit` standart holatda **60 soniyada 20 ta**
       xabarga ruxsat beradi; limitdan oshsa bot jimgina javob bermaydi. Bir daqiqa kuting.
 
-### 18. Telefon raqami qabul qilinmayapti
+### 16. Telefon raqami qabul qilinmayapti
 
 Bot raqamni `+998901234567` ko‘rinishiga keltiradi va quyidagi yozuvlarni tushunadi:
 `901234567`, `90 123 45 67`, `+998901234567`, `998901234567`.
@@ -243,7 +222,7 @@ Eng ishonchli yo‘l — **“📱 Raqamni yuborish”** tugmasini bosish. Muhim
 (bu qasddan qo‘yilgan cheklov). Shuningdek, `+7`, `+1` kabi xorijiy raqamlar formatga tushmasligi
 mumkin — bunday holatda raqamni qo‘lda yozib yuborish kerak.
 
-### 19. Foydalanuvchi qayta ro‘yxatdan o‘tmoqchi / ma’lumotini o‘zgartirmoqchi
+### 17. Foydalanuvchi qayta ro‘yxatdan o‘tmoqchi / ma’lumotini o‘zgartirmoqchi
 
 `app.allow_edit` yoqilgan bo‘lsa (standart holat), foydalanuvchi `/profil` yozadi va
 **“Ma’lumotlarni yangilash”** tugmasini bosadi — ariza raqami (`#id`) o‘zgarmaydi, maydonlar
@@ -253,7 +232,7 @@ qayta so‘raydi.
 Butunlay noldan boshlash kerak bo‘lsa, admin panelda **Arizalar → ariza tafsiloti → O‘chirish**
 qiling: shundan so‘ng foydalanuvchi `/start` bilan yangidan to‘ldiradi.
 
-### 20. Ro‘yxatni vaqtincha yopmoqchiman
+### 18. Ro‘yxatni vaqtincha yopmoqchiman
 
 Uch xil yo‘l bor (barchasi bir xil sozlamani boshqaradi):
 
@@ -263,30 +242,24 @@ Uch xil yo‘l bor (barchasi bir xil sozlamani boshqaradi):
 
 Yopiq holatda mavjud arizalar saqlanadi, yangi foydalanuvchi esa muloyim ogohlantirish oladi.
 
-### 21. Faqat kanalga obuna bo‘lganlar ro‘yxatdan o‘tsin desam?
+### 19. Faqat kanalga obuna bo‘lganlar ro‘yxatdan o‘tsin desam?
 
 `app.required_channel` ga kanal manzilini yozing (masalan `'@andijon_ai_talents'`) yoki panelning
 **Sozlamalar** sahifasidan kiriting. Shart: **bot o‘sha kanalda administrator** bo‘lishi kerak,
 aks holda obunani tekshira olmaydi. O‘chirish uchun qiymatni bo‘sh qoldiring (`null`).
 
-### 22. Sozlamani `config.php` da o‘zgartirdim, lekin bot eskicha ishlayapti
+### 20. Sozlamani `config.php` da o‘zgartirdim, lekin bot eskicha ishlayapti
 
 `registration_open`, `required_channel`, `ask_language` va `welcome_extra` sozlamalari avval
 **bazadagi `settings` jadvalidan** o‘qiladi va faqat u yerda qiymat bo‘lmasa `config.php` ga
 murojaat qilinadi. Ya’ni panel yoki bot orqali bir marta o‘zgartirilgan sozlama config’dan
 ustun turadi. Yechim: qiymatni **admin panel → Sozlamalar** sahifasidan o‘zgartiring.
 
-### 23. Bot ruscha javob berdi / tilni qanday almashtiraman?
-
-Foydalanuvchi `/til` (yoki `/language`) yozib tilni tanlaydi. Til birinchi kirishda Telegram
-interfeysi tiliga qarab taklif qilinadi; `app.ask_language` ni `false` qilsangiz, bot til
-so‘ramay to‘g‘ridan-to‘g‘ri `app.default_locale` (standart: `uz`) tilida ishlaydi.
-
 ---
 
 ## 🔐 Admin panel
 
-### 24. Panel parolini unutdim — qanday tiklayman?
+### 21. Panel parolini unutdim — qanday tiklayman?
 
 Parol bazada emas, `config.php` ichida **xesh** ko‘rinishida saqlanadi, shuning uchun uni “eslab”
 bo‘lmaydi — yangisini yaratasiz:
@@ -307,7 +280,7 @@ Buyruq `$2y$...` bilan boshlanadigan satr chiqaradi. Uni `config.php` ga ko‘ch
 Terminal bo‘lmasa, xuddi shu ishni `setup.php?key=...` sahifasidagi **“Parol xeshini yaratish”**
 paneli bajaradi.
 
-### 25. “Login yoki parol noto‘g‘ri” — hammasi to‘g‘ri yozilgan bo‘lsa ham
+### 22. “Login yoki parol noto‘g‘ri” — hammasi to‘g‘ri yozilgan bo‘lsa ham
 
 - `password_hash` **to‘liq** ko‘chirilganmi? Satr uzun, oxiri kesilib qolmasin.
 - Xesh qo‘shtirnoq ichida, ortiqcha bo‘sh joysiz bo‘lsin.
@@ -315,14 +288,14 @@ paneli bajaradi.
 - `security.admin_panel.enabled` qiymati `true` ekanini tekshiring.
 - Xabar ataylab umumiy: qaysi maydon xato ekanini ko‘rsatmaydi (xavfsizlik talabi).
 
-### 26. “Juda ko‘p urinish. N daqiqadan so‘ng qayta urinib ko‘ring”
+### 23. “Juda ko‘p urinish. N daqiqadan so‘ng qayta urinib ko‘ring”
 
 Bu himoya chorasi: bitta IP’dan **5 marta** noto‘g‘ri kirishdan so‘ng **15 daqiqaga** bloklanadi
 (`security.admin_panel.max_attempts` va `lockout_seconds`). Kutish yoki blokni bekor qilish:
 bazadagi `login_attempts` jadvalidan o‘sha IP yozuvlarini o‘chiring, yoki `config.php` da
 `max_attempts` ni vaqtincha oshiring.
 
-### 27. Panel juda tez “chiqib ketyapti” (sessiya tugaydi)
+### 24. Panel juda tez “chiqib ketyapti” (sessiya tugaydi)
 
 Standart sessiya muddati **7200 soniya (2 soat)**. Uzaytirish:
 
@@ -333,7 +306,7 @@ Standart sessiya muddati **7200 soniya (2 soat)**. Uzaytirish:
 Sessiya har 15 daqiqada yangilanadi (bu xavfsizlik uchun, sizga sezilmaydi). Umumiy kompyuterda
 ishlayotgan bo‘lsangiz muddatni oshirmang — ish tugagach **Chiqish** tugmasini bosing.
 
-### 28. Formani yuborsam “419” yoki “Sessiya eskirgan” chiqyapti
+### 25. Formani yuborsam “419” yoki “Sessiya eskirgan” chiqyapti
 
 Bu CSRF himoyasi: sahifa uzoq vaqt ochiq turgan yoki brauzer cookie’ni o‘chirgan. Sahifani
 yangilang (F5) va amalni qayta bajaring. Doimiy takrorlansa: brauzerda cookie ruxsat etilganini
@@ -343,7 +316,7 @@ va serverda sessiya papkasi yozuvga ochiqligini tekshiring.
 
 ## 🗄 Ma’lumotlar
 
-### 29. CSV faylni Excel’da ochsam “krakozyabra” chiqyapti
+### 26. CSV faylni Excel’da ochsam “krakozyabra” chiqyapti
 
 Fayl UTF-8 BOM bilan va `;` ajratkichi bilan yaratiladi — zamonaviy Excel uni to‘g‘ri ochadi.
 Baribir buzilsa:
@@ -356,7 +329,7 @@ LibreOffice Calc’da esa fayl ochilganda **Character set: Unicode (UTF-8)**, **
 Semicolon** ni belgilang. Telefon raqami `+998...` ustunini **Text** formatida import qiling —
 aks holda Excel uni songa aylantirib, `+` va bosh nolni yo‘qotadi.
 
-### 30. SQLite’dan MySQL’ga qanday o‘taman?
+### 27. SQLite’dan MySQL’ga qanday o‘taman?
 
 1. **Zaxira oling:** `data/aitalents.sqlite` faylini va CSV eksportni saqlab qo‘ying
    (`php cli.php export data/backup.csv`).
@@ -368,9 +341,9 @@ aks holda Excel uni songa aylantirib, `+` va bosh nolni yo‘qotadi.
    orqali `INSERT` eksport qilib, phpMyAdmin’da import qiling. Jadval nomlari bir xil bo‘ladi.
 6. Botga `/start` yozib tekshiring, panelda arizalar ko‘rinishini tasdiqlang.
 
-> ℹ️ Ko‘chirish paytida ro‘yxatni **yopib** turing (20-savol) — shunda ma’lumot yo‘qolmaydi.
+> ℹ️ Ko‘chirish paytida ro‘yxatni **yopib** turing («Ro‘yxatni vaqtincha yopmoqchiman» savoli) — shunda ma’lumot yo‘qolmaydi.
 
-### 31. Zaxira nusxa (backup) qanday olinadi?
+### 28. Zaxira nusxa (backup) qanday olinadi?
 
 | Nima | Qanday |
 |------|--------|
@@ -382,7 +355,7 @@ aks holda Excel uni songa aylantirib, `+` va bosh nolni yo‘qotadi.
 Tavsiya: haftada bir marta CSV, oyda bir marta to‘liq baza dump’i. Zaxirani serverning o‘zida
 emas, alohida joyda saqlang.
 
-### 32. Arizani xato o‘chirib yubordim, tiklash mumkinmi?
+### 29. Arizani xato o‘chirib yubordim, tiklash mumkinmi?
 
 Yo‘q. **O‘chirish qaytarilmaydi** — yozuv bazadan butunlay olib tashlanadi. Faqat ikki imkoniyat
 qoladi: oxirgi zaxira nusxadan tiklash yoki foydalanuvchidan `/start` orqali qaytadan ro‘yxatdan
@@ -393,7 +366,7 @@ saqlanib qoladi. Kim o‘chirganini **Audit** sahifasidan ko‘rish mumkin.
 
 ## 📣 Xabar yuborish (broadcast)
 
-### 33. Ommaviy xabar juda sekin ketyapti
+### 30. Ommaviy xabar juda sekin ketyapti
 
 Bu normal. Telegram cheklovi tufayli bot sekundiga ~20 ta xabar yuboradi (har yuborish orasida
 qisqa pauza bor). 5 000 kishiga ~5 daqiqa ketadi. Tezlashtirishga urinish `429 Too Many Requests`
@@ -401,9 +374,9 @@ va vaqtinchalik blokga olib keladi — sozlamani o‘zgartirmang.
 
 Panelda broadcast **fon rejimida, bo‘lak-bo‘lak** yuboriladi va progress paneli yangilanib turadi.
 Sahifani yopib qo‘ysangiz jarayon to‘xtaydi — davom ettirish uchun uni qaytadan ochib
-**“Davom ettirish”** ni bosing yoki cron’ni yoqing (35-savol).
+**“Davom ettirish”** ni bosing yoki cron’ni yoqing (quyidagi cron savoli).
 
-### 34. Ba’zi foydalanuvchilarga xabar bormadi (`failed`)
+### 31. Ba’zi foydalanuvchilarga xabar bormadi (`failed`)
 
 Bu odatiy hol. Asosiy sabablar:
 
@@ -417,7 +390,7 @@ Bu odatiy hol. Asosiy sabablar:
 Yakuniy hisobotda `sent` va `failed` sonlari ko‘rsatiladi; xato sababi har bir qabul qiluvchi uchun
 alohida saqlanadi. Yuborishdan oldin **“Menga test yuborish”** tugmasidan foydalaning.
 
-### 35. Broadcast uchun cron qanday sozlanadi?
+### 32. Broadcast uchun cron qanday sozlanadi?
 
 Katta tarqatishlarni brauzerga bog‘lamaslik uchun cron ishlating. cPanel → **Cron Jobs** →
 har 5 daqiqada:
@@ -430,7 +403,7 @@ cd /home/USER/public_html/bot && /usr/local/bin/php cli.php broadcast:run >/dev/
 Aniq bittasini yuborish kerak bo‘lsa: `php cli.php broadcast:run 12`.
 Loglarni tozalash uchun sutkada bir marta: `php cli.php cleanup`.
 
-### 36. Broadcast’ni to‘xtatsam nima bo‘ladi?
+### 33. Broadcast’ni to‘xtatsam nima bo‘ladi?
 
 To‘xtatilganda (`paused`) yuborilgan xabarlar **qaytarib olinmaydi** — Telegram’da o‘chirish
 imkoni yo‘q. Qolgan qabul qiluvchilar navbatda `pending` holatida turadi va davom ettirilganda
@@ -441,7 +414,7 @@ Bekor qilingan tarqatish esa `broadcasts` ro‘yxatida hisoblagichlari bilan saq
 
 ## 🛡 Xavfsizlik
 
-### 37. `setup.php` ni o‘chirish kerakmi?
+### 34. `setup.php` ni o‘chirish kerakmi?
 
 **Ha, o‘rnatish tugagach o‘chiring.** U kalitsiz hech narsa qilmasa ham, serverda ortiqcha
 kirish nuqtasi qoldirmagan ma’qul. Keyinchalik kerak bo‘lsa faylni qayta yuklaysiz.
@@ -449,7 +422,7 @@ kirish nuqtasi qoldirmagan ma’qul. Keyinchalik kerak bo‘lsa faylni qayta yuk
 O‘chira olmasangiz, hech bo‘lmaganda `security.setup_key` ni uzun tasodifiy satrga almashtiring
 va uni hech kimga bermang.
 
-### 38. Token yoki panel paroli sizib chiqqan bo‘lsa nima qilaman?
+### 35. Token yoki panel paroli sizib chiqqan bo‘lsa nima qilaman?
 
 1. BotFather’da `/revoke` → yangi token → `config.php` ga yozing.
 2. `telegram.webhook_secret` ni yangilang.
@@ -458,7 +431,7 @@ va uni hech kimga bermang.
 5. `security.setup_key` ni almashtiring.
 6. **Audit** sahifasidan begona amallar bo‘lmaganini tekshiring.
 
-### 39. `.htaccess` ishlamayapti — `config.php` brauzerda ochilyapti
+### 36. `.htaccess` ishlamayapti — `config.php` brauzerda ochilyapti
 
 Darhol harakat qiling:
 
@@ -469,21 +442,15 @@ Darhol harakat qiling:
   dagi yo‘lni o‘zgartirish mumkin (dasturchi yordami bilan).
 - Test: `https://domen.uz/bot/config.php` va `https://domen.uz/bot/data/aitalents.sqlite` manzillari
   `403 Forbidden` qaytarishi kerak. Agar kod matni ko‘rinsa — bu jiddiy xavf, tokenni darhol
-  almashtiring (38-savol).
+  almashtiring («Token yoki panel paroli sizib chiqqan bo‘lsa» savoli).
 
-### 40. Loglarda shaxsiy ma’lumot bormi, ular qancha saqlanadi?
+### 37. Loglarda shaxsiy ma’lumot bormi, ular qancha saqlanadi?
 
 Loglar `data/logs/bot-YYYY-MM-DD.log` ko‘rinishida kunlik yoziladi va standart holatda oxirgi
 **14 kunlik** fayl saqlanadi (`log.max_files`). Ular texnik ma’lumot (telegram id, xato matni)
 saqlaydi, shuning uchun `data/` papkasi `.htaccess` bilan yopilgan. Kerak bo‘lmasa
 `log.level` ni `warning` ga qo‘ying yoki `log.enabled` ni `false` qiling. Eski fayllarni
 `php cli.php cleanup` yoki panelning **Sozlamalar → “Loglarni tozalash”** tugmasi o‘chiradi.
-
-### 41. Foydalanuvchini bloklash kerak bo‘lsa (spam, haqoratli matn)?
-
-Admin panel → **Foydalanuvchilar** → kerakli yozuvni toping → **Bloklash**. Bloklangan
-foydalanuvchi botga yozganda javob olmaydi va ommaviy xabarlarga kirmaydi. Blokni istalgan vaqtda
-olib tashlash mumkin — ma’lumotlari saqlanib qoladi.
 
 ---
 
