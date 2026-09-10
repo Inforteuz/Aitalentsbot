@@ -1,0 +1,33 @@
+# Andijon AI Talents — editor defaults.
+# https://editorconfig.org  (supported natively by PhpStorm/VS Code and most editors)
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# PHP: PSR-12 — 4 spaces, soft limit of 120 columns.
+[*.php]
+indent_style = space
+indent_size = 4
+max_line_length = 120
+
+# Config/markup/asset files read better with 2 spaces.
+[*.{yml,yaml,json,js,css,html,htm,svg}]
+indent_style = space
+indent_size = 2
+
+# Makefiles require real tabs — never convert them.
+[{Makefile,makefile,*.mk}]
+indent_style = tab
+indent_size = unset
+tab_width = unset
+
+# Markdown: trailing spaces are meaningful (hard line break).
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 2

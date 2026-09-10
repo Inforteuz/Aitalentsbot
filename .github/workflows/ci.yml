@@ -1,0 +1,119 @@
+# CI for the Andijon AI Talents Telegram bot. No Composer, so the pipeline is:
+# php -l over every file, a grep gate that keeps the source PHP 8.1 parseable,
+# and the dependency-free harness in tests/run.php.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, pdo_sqlite, pdo_mysql, curl, json
+          coverage: none
+      - name: php -l every PHP file
+        run: |
+          set -uo pipefail
+          err="$(mktemp)"
+          # -print0/-0 survives spaces in paths, -P4 lints four files at a time,
+          # and xargs exits 123 as soon as one php -l invocation fails.
+          set +e
+          find . -path ./.git -prune -o -type f -name '*.php' -print0 \
+            | xargs -0 -r -n1 -P4 php -d display_errors=stderr -l >/dev/null 2>"$err"
+          rc=$?
+          set -e
+          # Anything on stderr (parse error, deprecation, warning) fails as well.
+          if [ -s "$err" ]; then
+            echo "::error::php -l wrote diagnostics on PHP ${{ matrix.php }}:"
+            cat "$err"
+            exit 1
+          fi
+          [ "$rc" -eq 0 ] || { echo "::error::php -l failed (xargs exit $rc)"; exit 1; }
+          echo "OK: no syntax errors on PHP ${{ matrix.php }}."
+
+  compat-8.1:
+    name: compat-8.1 (no PHP 8.2+ syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mbstring, pdo_sqlite, pdo_mysql, curl, json
+          coverage: none
+      - name: Grep for constructs PHP 8.1 cannot parse
+        run: |
+          set -uo pipefail
+          fail=0
+          # scan <what> <E|P> <pattern> — grep exits 1 on "no match" (the good
+          # case), so its status is captured; comment lines are filtered out.
+          scan() {
+            set +e; raw="$(grep -rn"$2" --include='*.php' --exclude-dir=.git -- "$3" .)"; rc=$?; set -e
+            [ "$rc" -le 1 ] || { echo "::error::grep -$2 failed (exit $rc)"; exit 2; }
+            hits="$(printf '%s\n' "$raw" | grep -vE ':[0-9]+:[[:space:]]*(//|/?\*|#[^[])' || true)"
+            [ -n "$hits" ] || return 0
+            echo "::error::$1 — forbidden, this code must stay PHP 8.1 compatible:"
+            printf '%s\n' "$hits" | sed 's/^/    /'
+            fail=1
+          }
+          # 8.2 — readonly classes (readonly *properties* are fine on 8.1).
+          scan 'readonly class' E '^[[:space:]]*((final|abstract)[[:space:]]+)?readonly[[:space:]]+((final|abstract)[[:space:]]+)?class[[:space:]]'
+          # 8.2 — DNF types such as (Countable&ArrayAccess)|null.
+          scan 'DNF (disjunctive normal form) type' E '\(\\?[A-Za-z_][A-Za-z0-9_\\]*&\\?[A-Za-z_][A-Za-z0-9_\\]*\)'
+          # 8.3 — the #[\Override] attribute.
+          scan '#[\Override] attribute' E '#\[[[:space:]]*\\?Override[[:space:]]*\]'
+          # 8.3/8.4 functions missing on 8.1 (-> and :: calls skipped: methods are fine).
+          scan 'PHP 8.3/8.4 only function' E '(^|[^A-Za-z0-9_>:$])\\?(json_validate|mb_str_pad|str_increment|array_find|array_find_key|array_any|array_all)[[:space:]]*\('
+          # Deprecated in 8.4 — implicit nullable parameter. PCRE, because it needs a
+          # look-behind (type not already prefixed with "?") and a look-ahead (`mixed`).
+          scan 'implicit nullable parameter (use ?type $x = null)' P '(?:(?<=[(,])|^)[ \t]*(?:(?:public|protected|private|readonly)[ \t]+)*(?!mixed\b)\\?[A-Za-z_][A-Za-z0-9_\\]*[ \t]+\$[A-Za-z_]\w*[ \t]*=[ \t]*null\b'
+          # 8.2 — constants in traits. Scope aware, so awk counts braces: a plain
+          # `const` grep cannot tell a trait body from a class body.
+          set +e
+          traits="$(find . -path ./.git -prune -o -type f -name '*.php' -print0 | xargs -0 -r awk '
+            /^[[:space:]]*(final[[:space:]]+)?trait[[:space:]]+[A-Za-z_]/ { t = 1; d = 0 }
+            t { d += gsub(/\{/, "{") - gsub(/\}/, "}")
+                if (d > 0 && $0 ~ /^[[:space:]]*((public|protected|private|final)[[:space:]]+)*const[[:space:]]/)
+                  printf "%s:%d:%s\n", FILENAME, FNR, $0
+                if (d <= 0 && /\}/) t = 0 }')"
+          set -e
+          if [ -n "$traits" ]; then
+            echo "::error::constant declared inside a trait — forbidden on PHP 8.1:"
+            printf '%s\n' "$traits" | sed 's/^/    /'
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || { echo "PHP 8.1 compatibility check FAILED."; exit 1; }
+          echo "OK: no PHP 8.2+ only constructs found."
+
+  tests:
+    name: tests (PHP 8.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mbstring, pdo_sqlite, pdo_mysql, curl, json
+          coverage: none
+      - name: Run the dependency-free test harness
+        run: |
+          set -eu
+          if [ -f tests/run.php ]; then
+            php tests/run.php
+          else
+            echo "::notice::tests/run.php does not exist yet — skipping the suite."
+          fi

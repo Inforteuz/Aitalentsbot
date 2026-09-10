@@ -1,0 +1,62 @@
+# =============================================================================
+#  Andijon AI Talents — data/ papkasi yopiq / directory is closed
+#  UZ: Bu yerda SQLite bazasi va kunlik jurnal fayllari saqlanadi — ular
+#      tashqaridan hech qachon ochilmasligi kerak (ichida foydalanuvchi
+#      ma'lumotlari bor).
+#  EN: Holds the SQLite database and the daily log files; both contain personal
+#      data and must never be downloadable.
+#
+#  UZ: Bu fayl papkani brauzerdan butunlay yopadi. PHP kodi fayllarni disk
+#      orqali o'qiydi, shuning uchun bot va admin panel ishlashda davom etadi.
+#      Bu faylni O'CHIRMANG va git'dan chiqarmang.
+#  EN: This file closes the directory to the web only. PHP still reads these
+#      files from disk, so the bot and the panel keep working. Do not delete it.
+#
+#  UZ: Ba'zi hostinglar .htaccess'ni umuman o'qimaydi (nginx, ba'zi VPS
+#      sozlamalari). Bunday holda papkalarni veb-ildizdan (public_html)
+#      tashqariga chiqarish yoki server konfiguratsiyasida yopish kerak.
+#  EN: On servers that ignore .htaccess (nginx and some VPS setups) move these
+#      directories outside the document root or deny them in the vhost config.
+# =============================================================================
+
+# UZ: Papka ro'yxati ko'rinmasin. / EN: No directory listing.
+Options -Indexes
+
+# UZ: Apache 2.4 (mod_authz_core mavjud). / EN: Apache 2.4 syntax.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+
+# UZ: Apache 2.2 (eski sintaksis, mod_authz_core yo'q).
+# EN: Apache 2.2 fallback — mod_authz_core does not exist there.
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
+
+# UZ: Yuqoridagi qoidalar ishlamagan taqdirda ham hech qanday fayl bevosita
+#     ochilmasligi uchun qo'shimcha qatlam.
+# EN: Extra layer in case the directives above are overridden higher up.
+<FilesMatch ".*">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# UZ: Bu papkada PHP hech qachon bajarilmasligi kerak (yuklangan yoki
+#     yaratilgan fayl orqali kod ishga tushishining oldini oladi).
+# EN: PHP must never execute here; this stops a written/uploaded file from
+#     being run as code. Guarded, so it cannot break PHP-FPM/LiteSpeed hosts.
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php5.c>
+    php_flag engine off
+</IfModule>
