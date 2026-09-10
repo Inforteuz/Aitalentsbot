@@ -1,0 +1,55 @@
+# =============================================================================
+#  Andijon AI Talents — git ignore rules
+#  UZ: Maxfiy va vaqtinchalik fayllar git'ga tushmasligi kerak.
+#  EN: Secrets and runtime files must never reach the repository.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Live configuration — contains the bot token, the DB password and the panel
+# password hash. UZ: bu faylda bot tokeni bor, hech qachon commit qilmang!
+# The template config.example.php IS tracked on purpose.
+# -----------------------------------------------------------------------------
+config.php
+
+# -----------------------------------------------------------------------------
+# Databases / ma'lumotlar bazasi fayllari
+# Covers aitalents.sqlite plus the -journal / -wal / -shm side files.
+# -----------------------------------------------------------------------------
+data/*.sqlite*
+data/*.db
+data/*.sql
+
+# -----------------------------------------------------------------------------
+# Runtime logs, temporary test data, generated exports
+# UZ: jurnal, test va eksport fayllari — faqat papkalar saqlanadi.
+# -----------------------------------------------------------------------------
+data/logs/*
+tests/tmp/*
+exports/*
+data/cache/*
+*.log
+
+# -----------------------------------------------------------------------------
+# Editors and operating systems / muharrir va OS fayllari
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea
+.idea/
+.vscode
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+
+# -----------------------------------------------------------------------------
+# Keep the directory structure and the protection files in git.
+# UZ: Papkalar va himoya fayllari (.gitkeep, .htaccess) saqlanib qolsin —
+#     shuning uchun ular yuqoridagi qoidalardan "!" bilan chiqarib olinadi.
+# NOTE: negations must stay AFTER the ignore rules above.
+# -----------------------------------------------------------------------------
+!**/.gitkeep
+!**/.gitignore
+!**/.htaccess

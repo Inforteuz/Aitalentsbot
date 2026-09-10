@@ -1,0 +1,214 @@
+# =============================================================================
+#  Andijon AI Talents — root .htaccess
+#  UZ: Apache/LiteSpeed uchun himoya qoidalari (cPanel hosting uchun mo'ljallangan).
+#  EN: Apache/LiteSpeed hardening rules, written for cPanel shared hosting.
+#
+#  UZ: Faqat quyidagi fayllar brauzerdan ochilishi kerak:
+#         index.php (Telegram webhook), setup.php (o'rnatuvchi, keyin o'chiriladi),
+#         admin/ (boshqaruv paneli).
+#      Qolgan hamma narsa — kod, tillar, baza, jurnallar — yopiq.
+#  EN: Only index.php (the Telegram webhook), setup.php (the installer, delete it
+#      afterwards) and admin/ should be reachable from a browser. Everything else —
+#      source code, language files, the database and the logs — stays closed.
+#
+#  UZ MUAMMO BO'LSA / TROUBLESHOOTING:
+#      Agar sayt "500 Internal Server Error" bersa, hostingingiz ba'zi
+#      direktivalarga ruxsat bermayapti. Ayblanuvchini topish uchun bo'limlarni
+#      birma-bir "#" bilan izohga oling — eng ko'p uchraydigani "Options -Indexes".
+#      If you get a 500 error, your host forbids one of these directives; comment
+#      the blocks out one by one (Options -Indexes is the usual culprit).
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1) Papka ro'yxatini o'chirish / Disable directory listing
+#    UZ: Papka ochilganda fayllar ro'yxati ko'rinmasin.
+# -----------------------------------------------------------------------------
+Options -Indexes
+
+<IfModule mod_autoindex.c>
+    IndexIgnore *
+</IfModule>
+
+# UZ: Standart kodlash — o'zbek/rus matnlari to'g'ri ko'rinishi uchun.
+# EN: Default charset so Uzbek/Russian text is served correctly.
+AddDefaultCharset UTF-8
+
+
+# -----------------------------------------------------------------------------
+# 2) Maxfiy fayllarni yopish / Deny direct access to sensitive files
+#    UZ: config.php, config.example.php, bootstrap.php, cli.php, *.md, *.sqlite,
+#        *.log va shunga o'xshash xizmat fayllari.
+#    EN: Configuration, bootstrap, CLI entry point, documentation, databases,
+#        logs, dumps and editor leftovers.
+# -----------------------------------------------------------------------------
+<FilesMatch "(?i)^(config\.php|config\.example\.php|bootstrap\.php|cli\.php|composer\.(json|lock|phar)|package(-lock)?\.json|.+\.(md|markdown|sqlite|sqlite3|sqlite-journal|sqlite-wal|sqlite-shm|db|sql|log|ini|yml|yaml|lock|bak|old|orig|swp|dist|example))$">
+    <IfModule mod_authz_core.c>
+        # Apache 2.4+
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        # Apache 2.2
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# UZ: Nuqta bilan boshlanadigan fayllar (.htaccess, .gitignore, .env ...).
+# EN: Dotfiles such as .htaccess, .gitignore, .env, .DS_Store.
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# UZ: Zaxira nusxa fayllari (file.php~, file.php.save).
+# EN: Backup copies left behind by editors and file managers.
+<FilesMatch "(~|\.save|\.backup)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+
+# -----------------------------------------------------------------------------
+# 3) Ichki papkalarni yopish / Deny the internal directories
+#    UZ: src/, lang/, data/, tests/, docs/, exports/ papkalari veb orqali
+#        ochilmaydi. Har bir papkada o'zining .htaccess fayli ham bor — bu
+#        qatlam mod_rewrite ishlaydigan hostinglar uchun qo'shimcha himoya.
+#    EN: Belt-and-braces on top of the per-directory .htaccess files. exports/ is
+#        included because CSV exports contain personal data (names, phones);
+#        drop it from the list only if you deliberately publish those files.
+# -----------------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # UZ: Agar bot subdomen emas, kichik papkada tursa (masalan example.uz/bot),
+    #     odatda hech narsa o'zgartirish shart emas; kerak bo'lsa quyidagini oching.
+    # EN: Uncomment and adjust when the bot lives in a subfolder.
+    # RewriteBase /
+
+    # UZ: Yopiq papkalarga har qanday murojaat 403 bilan qaytariladi.
+    # EN: Any request that walks into one of these directories is forbidden.
+    RewriteRule ^(?:.*/)?(src|lang|data|tests|docs|exports)(/|$) - [F,L]
+
+    # UZ: .git, .svn kabi yashirin papkalar (ACME sertifikat papkasidan tashqari).
+    # EN: Hidden directories such as .git and .svn (.well-known stays reachable).
+    RewriteRule (^|/)\.(?!well-known/) - [F,L]
+</IfModule>
+
+
+# -----------------------------------------------------------------------------
+# 4) HTTPS majburiy / Force HTTPS  — IZOHDA / COMMENTED OUT
+#    UZ: Telegram webhook faqat HTTPS bilan ishlaydi, shuning uchun sertifikat
+#        shart. Ammo bu blokni DARHOL yoqmang:
+#          * avval cPanel > SSL/TLS Status orqali AutoSSL sertifikatini oling;
+#          * ko'p hostinglarda HTTPS'ga yo'naltirish allaqachon panelda yoqilgan —
+#            ikkinchi marta yoqsangiz "too many redirects" xatosi chiqadi;
+#          * agar sayt Cloudflare/proxy ortida bo'lsa, X-Forwarded-Proto sharti
+#            aynan shu tsiklning oldini oladi (quyida hisobga olingan).
+#        Sertifikat tayyor bo'lgach, quyidagi 5 qatordan "# " belgilarini oling.
+#    EN: Telegram only delivers webhooks over HTTPS. Enable this block ONLY after
+#        the certificate is issued, and only if your hosting panel is not already
+#        redirecting — a double redirect ends in an infinite loop. The
+#        X-Forwarded-Proto condition keeps it safe behind Cloudflare/proxies.
+# -----------------------------------------------------------------------------
+# <IfModule mod_rewrite.c>
+#     RewriteEngine On
+#     RewriteCond %{HTTPS} !=on
+#     RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+#     RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+# </IfModule>
+
+
+# -----------------------------------------------------------------------------
+# 5) Xavfsizlik sarlavhalari / Security headers (whole site)
+#    UZ: mod_headers yo'q hostinglarda bu blok jimgina o'tkazib yuboriladi;
+#        admin panel bu sarlavhalarni PHP orqali ham yuboradi, ya'ni himoya
+#        baribir saqlanadi.
+#    EN: Skipped silently when mod_headers is missing; the admin panel sends the
+#        same headers from PHP, so protection does not depend on this block.
+# -----------------------------------------------------------------------------
+<IfModule mod_headers.c>
+    # UZ: Saytni iframe ichida ochishni taqiqlash (clickjacking himoyasi).
+    # EN: Forbid framing the site (clickjacking protection).
+    Header always set X-Frame-Options "DENY"
+
+    # UZ: Brauzer MIME turini "taxmin qilmasin".
+    # EN: Stop MIME type sniffing.
+    Header always set X-Content-Type-Options "nosniff"
+
+    # UZ: Tashqi saytlarga havola manzili yuborilmasin.
+    # EN: Never leak the referring URL.
+    Header always set Referrer-Policy "no-referrer"
+
+    # UZ: Brauzer imkoniyatlarini o'chirish — botga hech biri kerak emas.
+    # EN: Disable browser features the panel never uses.
+    Header always set Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), xr-spatial-tracking=()"
+
+    # UZ: PHP versiyasini oshkor qilmaslik.
+    # EN: Hide the PHP version banner.
+    Header always unset X-Powered-By
+    Header unset X-Powered-By
+</IfModule>
+
+
+# -----------------------------------------------------------------------------
+# 6) Content-Security-Policy — faqat /admin uchun / scoped to /admin
+#    UZ: Panel butunlay o'zining CSS/JS fayllaridan foydalanadi (CDN yo'q),
+#        shuning uchun qat'iy siyosat qo'yiladi. <If> direktivasi faqat
+#        Apache 2.4+ da bor — shu sababli u mod_authz_core (2.4 belgisi) ichiga
+#        o'ralgan, ya'ni Apache 2.2 da 500 xatosi chiqmaydi.
+#    EN: <If> exists only in Apache 2.4, so it is wrapped in an <IfModule
+#        mod_authz_core.c> guard (that module also only exists in 2.4). On 2.2 the
+#        whole block is skipped instead of throwing a 500.
+#
+#    UZ: AGAR HOSTINGINGIZDA <If> ISHLAMASA (eski Apache 2.2 yoki ba'zi LiteSpeed
+#        sozlamalari) — ikkita muqobil bor:
+#          a) admin/ papkasida alohida .htaccess yarating va ichiga faqat
+#             <IfModule mod_headers.c> Header always set Content-Security-Policy "..." </IfModule>
+#             yozing (eng oson va ishonchli yo'l);
+#          b) hech narsa qilmang — admin/index.php shu sarlavhani PHP orqali
+#             header() bilan baribir yuboradi.
+#        Butun sayt uchun CSP qo'yish MUMKIN EMAS: index.php (webhook) oddiy matn
+#        qaytaradi va unga siyosat kerak emas.
+#    EN: If <If> is unavailable, either put the same Header line into an
+#        admin/.htaccess of its own, or rely on the header PHP already sends.
+#        Do not apply this CSP site-wide: the webhook endpoint is not HTML.
+# -----------------------------------------------------------------------------
+<IfModule mod_authz_core.c>
+    <IfModule mod_headers.c>
+        <If "%{REQUEST_URI} =~ m#(^|/)admin(/|$)#">
+            Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'"
+        </If>
+    </IfModule>
+</IfModule>
+
+
+# -----------------------------------------------------------------------------
+# 7) Kichik qulayliklar / Small conveniences
+# -----------------------------------------------------------------------------
+# UZ: Panel statik fayllarini keshlash (CSS/JS/SVG/rasm).
+# EN: Cache the panel's static assets.
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css            "access plus 7 days"
+    ExpiresByType application/javascript "access plus 7 days"
+    ExpiresByType image/svg+xml       "access plus 7 days"
+    ExpiresByType image/png           "access plus 30 days"
+    ExpiresByType image/x-icon        "access plus 30 days"
+</IfModule>
+
+# UZ: Matnli fayllarni siqib uzatish (tezroq yuklanadi).
+# EN: Compress text responses.
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/css text/csv application/javascript application/json image/svg+xml
+</IfModule>

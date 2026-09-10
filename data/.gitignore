@@ -1,0 +1,16 @@
+# =============================================================================
+#  data/ — runtime storage (SQLite database, daily logs, caches)
+#  UZ: Bu papka git'da qolsin, lekin ichidagi fayllar saqlanmasin.
+#  EN: Keep the directory in git, ignore everything it accumulates at runtime.
+# =============================================================================
+
+# Ignore every file and folder inside data/ ...
+*
+
+# ... except the structure and protection files that must ship with the project.
+!.gitignore
+!.htaccess
+!logs/
+logs/*
+!logs/.gitkeep
+!logs/.htaccess
