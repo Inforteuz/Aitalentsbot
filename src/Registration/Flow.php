@@ -931,7 +931,8 @@ final class Flow
                 return true;
 
             case 'cancel':
-                $this->answer($u, Lang::t('reg.cancelled', $locale));
+                // cancel() sends the goodbye message, the toast stays silent.
+                $this->answer($u);
                 $this->stripButtons($u);
                 $this->cancel($user);
 
@@ -985,14 +986,15 @@ final class Flow
                 return true;
 
             case 'confirm':
-                $this->answer($u, Lang::t('reg.saving', $locale));
-
+                // A confirm button from an older card: show where we really are.
                 if ($step !== Step::Confirm) {
+                    $this->answer($u, Lang::t('error.session_expired', $locale), true);
                     $this->render($user, $step);
 
                     return true;
                 }
 
+                $this->answer($u, Lang::t('reg.saving', $locale));
                 $this->stripButtons($u);
                 $this->complete($user, $this->data($telegramId));
 
