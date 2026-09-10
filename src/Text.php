@@ -62,6 +62,8 @@ final class Text
      *
      * `ENT_SUBSTITUTE` keeps broken UTF-8 from turning the whole message into an
      * empty string, which is exactly what happens with the default flags.
+     * The HTML 4.01 doctype is deliberate: it encodes the apostrophe as the
+     * numeric `&#039;` instead of `&apos;`, which Telegram does not document.
      */
     public static function esc(?string $s): string
     {
@@ -69,7 +71,7 @@ final class Text
             return '';
         }
 
-        return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+        return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
     /**

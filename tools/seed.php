@@ -410,13 +410,13 @@ final class AiTalentsSeeder
 
         if ($real > 0 && $fresh) {
             seed_out('');
-            seed_out('   ***********************************************************');
-            seed_out('   *  WARNING: this database holds REAL rows.                *');
-            seed_out('   *  They will NOT be modified, but if this is a live        *');
-            seed_out('   *  installation you should stop now (Ctrl+C).              *');
-            seed_out('   *  DIQQAT: bazada real yozuvlar bor. Ular o\'zgarmaydi,     *');
-            seed_out('   *  lekin bu real server bo\'lsa — hoziroq to\'xtating!       *');
-            seed_out('   ***********************************************************');
+            $this->box([
+                'WARNING: this database holds REAL rows.',
+                'They will NOT be modified, but if this is a live',
+                'installation, stop right now (Ctrl+C).',
+                'DIQQAT: bazada real yozuvlar bor. Ular o\'zgarmaydi,',
+                'lekin bu real server bo\'lsa — hoziroq to\'xtating!',
+            ]);
         }
     }
 
@@ -1807,6 +1807,36 @@ final class AiTalentsSeeder
         $keys = array_keys($weights);
 
         return $keys[count($keys) - 1];
+    }
+
+    /**
+     * Print an ASCII framed warning box.
+     *
+     * @param string[] $lines
+     */
+    private function box(array $lines): void
+    {
+        $width = 0;
+
+        foreach ($lines as $line) {
+            $width = max($width, $this->width($line));
+        }
+
+        seed_out('   ' . str_repeat('*', $width + 6));
+
+        foreach ($lines as $line) {
+            seed_out('   *  ' . $line . str_repeat(' ', $width - $this->width($line)) . '  *');
+        }
+
+        seed_out('   ' . str_repeat('*', $width + 6));
+    }
+
+    /**
+     * Character (not byte) length, so UTF-8 text still lines up.
+     */
+    private function width(string $text): int
+    {
+        return function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : strlen($text);
     }
 
     /**

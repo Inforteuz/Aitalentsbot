@@ -39,10 +39,27 @@ final class Validator
     private const NAME_PATTERN =
         "/^[\\p{L}\\p{M}\\-. '\x{2018}\x{2019}\x{02BB}\x{02BC}\x{00B4}\x{0060}]+$/u";
 
-    /** URL matcher: explicit scheme, or a bare host with a known-looking TLD. */
+    /**
+     * Top level domains recognised when a link is typed WITHOUT a scheme
+     * ("github.com/ali"). Anything else still works when prefixed with
+     * `http(s)://`; the list keeps ordinary sentences with a missing space
+     * after a full stop from being mistaken for links.
+     */
+    private const BARE_TLDS =
+        'uz|ru|com|net|org|io|me|co|dev|app|ai|tech|info|biz|edu|gov|int|pro|xyz|site|online'
+        . '|store|shop|blog|art|design|page|link|digital|agency|studio|school|academy|space'
+        . '|club|fun|life|world|news|media|group|team|works|top|live|tv|cc|su|kz|kg|tj|tm|az'
+        . '|tr|ua|by|de|fr|es|it|pl|nl|se|fi|no|dk|cz|uk|us|ca|in|cn|jp|kr|eu';
+
+    /**
+     * URL matcher, three alternatives: an explicit http(s) link, a well known
+     * link host typed without a scheme, or a bare domain with a known TLD.
+     */
     private const URL_PATTERN =
-        '~\b(?:(?:https?://|ftp://)[^\s<>"\x{00AB}\x{00BB}]+|(?:www\.|t\.me/|telegram\.me/)[^\s<>"]+'
-        . '|[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9][a-z0-9\-]*)+\.[a-z]{2,24}(?:/[^\s<>"]*)?)~iu';
+        '~(?:https?://[^\s<>"\x{00AB}\x{00BB}]+'
+        . '|(?:www\.|t\.me/|telegram\.me/)[^\s<>"\x{00AB}\x{00BB}]+'
+        . '|(?<![\w@.])[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9][a-z0-9\-]*)*'
+        . '\.(?:' . self::BARE_TLDS . ')(?![a-z])(?:/[^\s<>"\x{00AB}\x{00BB}]*)?)~iu';
 
     /** Telegram usernames: 5-32 chars, start with a letter, letters/digits/underscore. */
     private const USERNAME_PATTERN = '/^[A-Za-z][A-Za-z0-9_]{4,31}$/';
@@ -249,8 +266,7 @@ final class Validator
         $found = [];
 
         foreach ($matches[0] as $candidate) {
-            // Sentence punctuation glued to the end of a link.
-            $candidate = rtrim($candidate, ".,;:!?)»\"'");
+            $candidate = self::trimTrailingPunctuation($candidate);
 
             if ($candidate === '' || !self::isUrl($candidate)) {
                 continue;
@@ -266,6 +282,36 @@ final class Validator
         }
 
         return $found;
+    }
+
+    /**
+     * Strip the sentence punctuation that gets glued to the end of a pasted link.
+     *
+     * A closing bracket is only removed when it has no opening partner inside the
+     * link, so "example.com/path_(x)" survives while "(example.com)" does not.
+     */
+    private static function trimTrailingPunctuation(string $candidate): string
+    {
+        $pairs = [')' => '(', ']' => '[', '}' => '{'];
+        $noise = ['.', ',', ';', ':', '!', '?', '"', "'", "\u{00AB}", "\u{00BB}",
+                  "\u{2018}", "\u{2019}", "\u{201C}", "\u{201D}"];
+
+        while ($candidate !== '') {
+            $last = mb_substr($candidate, -1, 1, 'UTF-8');
+
+            if (isset($pairs[$last])) {
+                // Keep a closing bracket that belongs to the link itself.
+                if (substr_count($candidate, $pairs[$last]) >= substr_count($candidate, $last)) {
+                    break;
+                }
+            } elseif (!in_array($last, $noise, true)) {
+                break;
+            }
+
+            $candidate = mb_substr($candidate, 0, -1, 'UTF-8');
+        }
+
+        return $candidate;
     }
 
     /** True when the string is a valid Telegram username (a leading @ is allowed). */
