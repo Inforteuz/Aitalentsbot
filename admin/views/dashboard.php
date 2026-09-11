@@ -125,7 +125,7 @@ $dbConversion = is_numeric($dbConversion) ? (float) $dbConversion : 0.0;
 $dbTopDay = isset($topDay) && is_array($topDay) ? $topDay : null;
 
 ?>
-<section class="card">
+<section class="card card--toolbar">
     <div class="card__head">
         <h2><?= e(t('panel.quick_search')) ?></h2>
         <span class="chip"><?= e(t('panel.card_conversion')) ?>: <?= e(number_format($dbConversion, 1, '.', ' ')) ?>%</span>
@@ -322,7 +322,7 @@ $dbTopDay = isset($topDay) && is_array($topDay) ? $topDay : null;
                                     <span class="badge"><?= e(t('status.unknown')) ?></span>
                                 <?php } ?>
                             </td>
-                            <td><?= e($dbCreated) ?></td>
+                            <td class="nowrap tabular"><?= e($dbCreated) ?></td>
                             <td>
                                 <a class="btn btn--ghost btn--sm" href="<?= e(url(['p' => 'registration', 'id' => $dbId])) ?>">
                                     <?= e(t('panel.view')) ?>

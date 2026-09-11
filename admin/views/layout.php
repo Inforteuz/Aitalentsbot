@@ -96,8 +96,8 @@ foreach ([
     <meta name="panel-i18n" content="<?= e((string) json_encode($layoutJsStrings, JSON_UNESCAPED_UNICODE)) ?>">
     <meta name="robots" content="noindex, nofollow">
     <meta name="referrer" content="no-referrer">
-    <meta name="theme-color" content="#050b1a">
-    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#0d2137">
+    <meta name="color-scheme" content="light">
     <meta name="description" content="<?= e(t('panel.title')) ?>">
     <title><?= e($layoutTitle) ?> — <?= e(t('panel.brand')) ?></title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,<?= e(base64_encode($layoutFavicon)) ?>">

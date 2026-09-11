@@ -224,7 +224,7 @@ $adMeta = static function (mixed $meta) use ($adScalar): array {
         </div>
     <?php } else { ?>
         <div class="card__body card__body--flush">
-            <div class="table-wrap">
+            <div class="table-wrap table-wrap--sticky">
                 <table class="table">
                     <thead>
                     <tr>

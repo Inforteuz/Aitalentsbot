@@ -71,24 +71,26 @@ if ($brRows === []) {
 /* ---------------------------------------------------------------------------
  | 2. Geometry
  */
-$brWidth = 720;
-$brLabelWidth = 210;   // left column holding the category names
-$brPadRight = 56;      // room for the value printed after each bar
-$brPadTop = 14;
-$brPadBottom = 28;     // axis captions
+/* The bar chart always lands in a half width card, so the drawing is kept
+   close to its rendered size: the viewBox scales type as well as geometry. */
+$brWidth = 620;
+$brLabelWidth = 190;   // left column holding the category names
+$brPadRight = 48;      // room for the value printed after each bar
+$brPadTop = 12;
+$brPadBottom = 26;     // axis captions
 
 $brCount = count($brRows);
 
 // Row height: derived from the row count, or from an explicit total height.
-$brRowHeight = 32;
+$brRowHeight = 26;
 
 if (isset($height) && is_numeric($height)) {
     $brInner = (int) $height - $brPadTop - $brPadBottom;
     $brRowHeight = $brInner > 0 ? (int) floor($brInner / $brCount) : $brRowHeight;
 }
 
-$brRowHeight = max(16, min(48, $brRowHeight));
-$brBarHeight = max(8, $brRowHeight - 14);
+$brRowHeight = max(16, min(40, $brRowHeight));
+$brBarHeight = max(8, $brRowHeight - 12);
 $brHeight = $brPadTop + ($brCount * $brRowHeight) + $brPadBottom;
 
 $brPlotX = $brLabelWidth;
@@ -135,7 +137,7 @@ foreach ($brRows as $brRow) {
 $brAccessible = ($brTitle !== '' ? $brTitle . ' — ' : '') . t('common.total') . ': ' . $brTotal;
 
 ?>
-<div class="chart">
+<div class="chart chart--bars">
     <svg viewBox="0 0 <?= e((string) $brWidth) ?> <?= e((string) $brHeight) ?>"
          preserveAspectRatio="xMidYMid meet" width="100%"
          role="img" aria-label="<?= e($brAccessible) ?>">
@@ -144,8 +146,8 @@ $brAccessible = ($brTitle !== '' ? $brTitle . ' — ' : '') . t('common.total') 
             <linearGradient id="<?= e($brUid) ?>-bar" gradientUnits="userSpaceOnUse"
                             x1="<?= e((string) $brPlotX) ?>" y1="0"
                             x2="<?= e((string) ($brPlotX + $brPlotWidth)) ?>" y2="0">
-                <stop offset="0" stop-color="#1273d4"/>
-                <stop offset="1" stop-color="#7cf3ff"/>
+                <stop class="chart__stop-bar-from" offset="0"/>
+                <stop class="chart__stop-bar-to" offset="1"/>
             </linearGradient>
         </defs>
 
@@ -155,13 +157,12 @@ $brAccessible = ($brTitle !== '' ? $brTitle . ' — ' : '') . t('common.total') 
             $brTickValue = $brStep * $brTick;
             $brTickX = round($brPlotX + ($brTickValue / $brTop * $brPlotWidth), 2);
             ?>
-            <line x1="<?= e((string) $brTickX) ?>" y1="<?= e((string) $brPadTop) ?>"
+            <line class="<?= $brTick === 0 ? 'chart__axis' : 'chart__grid' ?>"
+                  x1="<?= e((string) $brTickX) ?>" y1="<?= e((string) $brPadTop) ?>"
                   x2="<?= e((string) $brTickX) ?>"
-                  y2="<?= e((string) ($brHeight - $brPadBottom)) ?>"
-                  stroke="currentColor" stroke-opacity="<?= $brTick === 0 ? '0.28' : '0.12' ?>"
-                  stroke-width="1"/>
-            <text x="<?= e((string) $brTickX) ?>" y="<?= e((string) ($brHeight - 9)) ?>"
-                  text-anchor="middle" font-size="11" fill="currentColor" fill-opacity="0.62">
+                  y2="<?= e((string) ($brHeight - $brPadBottom)) ?>"/>
+            <text class="chart__tick" x="<?= e((string) $brTickX) ?>"
+                  y="<?= e((string) ($brHeight - 9)) ?>" text-anchor="middle">
                 <?= e((string) $brTickValue) ?>
             </text>
         <?php } ?>
@@ -173,19 +174,18 @@ $brAccessible = ($brTitle !== '' ? $brTitle . ' — ' : '') . t('common.total') 
             $brBarY = round($brRowTop + (($brRowHeight - $brBarHeight) / 2), 2);
             $brBarWidth = round($brRow['value'] / $brTop * $brPlotWidth, 2);
             $brTextY = round($brBarY + ($brBarHeight / 2) + 4, 2);
-            $brRadius = round(min(8, $brBarHeight / 2), 2);
+            $brRadius = round(min(3, $brBarHeight / 2), 2);
             $brCaption = Text::truncate($brRow['label'], 28);
             ?>
-            <text x="<?= e((string) ($brLabelWidth - 12)) ?>" y="<?= e((string) $brTextY) ?>"
-                  text-anchor="end" font-size="12" fill="currentColor" fill-opacity="0.82">
+            <text class="chart__name" x="<?= e((string) ($brLabelWidth - 12)) ?>"
+                  y="<?= e((string) $brTextY) ?>" text-anchor="end">
                 <?= e($brCaption) ?>
                 <title><?= e($brRow['label']) ?></title>
             </text>
 
-            <rect x="<?= e((string) $brPlotX) ?>" y="<?= e((string) $brBarY) ?>"
+            <rect class="chart__track" x="<?= e((string) $brPlotX) ?>" y="<?= e((string) $brBarY) ?>"
                   width="<?= e((string) $brPlotWidth) ?>" height="<?= e((string) $brBarHeight) ?>"
-                  rx="<?= e((string) $brRadius) ?>"
-                  fill="currentColor" fill-opacity="0.07"/>
+                  rx="<?= e((string) $brRadius) ?>"/>
 
             <?php if ($brBarWidth > 0.5) { ?>
                 <rect x="<?= e((string) $brPlotX) ?>" y="<?= e((string) $brBarY) ?>"
@@ -196,9 +196,8 @@ $brAccessible = ($brTitle !== '' ? $brTitle . ' — ' : '') . t('common.total') 
                 </rect>
             <?php } ?>
 
-            <text x="<?= e((string) round($brPlotX + $brBarWidth + 10, 2)) ?>"
-                  y="<?= e((string) $brTextY) ?>" text-anchor="start" font-size="12"
-                  fill="currentColor" fill-opacity="0.9"><?= e((string) $brRow['value']) ?></text>
+            <text class="chart__value" x="<?= e((string) round($brPlotX + $brBarWidth + 10, 2)) ?>"
+                  y="<?= e((string) $brTextY) ?>" text-anchor="start"><?= e((string) $brRow['value']) ?></text>
         <?php } ?>
     </svg>
 </div>
