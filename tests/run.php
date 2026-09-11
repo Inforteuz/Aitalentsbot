@@ -26,6 +26,7 @@ declare(strict_types=1);
  * Exit code: 0 when everything passed, 1 when at least one assertion failed.
  */
 
+use AiTalents\Admin\Auth;
 use AiTalents\App;
 use AiTalents\Config;
 use AiTalents\Database;
@@ -182,6 +183,32 @@ final class TestRunner
         if (count($this->diagnostics) < 200 && !in_array($line, $this->diagnostics, true)) {
             $this->diagnostics[] = $line;
         }
+    }
+
+    /**
+     * Run $fn with a private diagnostics list and hand back what it collected.
+     *
+     * This is how the harness proves — permanently, not just once by hand —
+     * that a PHP warning raised anywhere inside a test really is caught and
+     * really would fail the run: the probe raises one on purpose, checks that
+     * the collector saw it, and restores the real list so the deliberate
+     * warning never reaches the verdict.
+     *
+     * @return string[] the diagnostics raised while $fn ran
+     */
+    public function probe(callable $fn): array
+    {
+        $saved = $this->diagnostics;
+        $this->diagnostics = [];
+
+        try {
+            $fn();
+        } finally {
+            $collected = $this->diagnostics;
+            $this->diagnostics = $saved;
+        }
+
+        return $collected;
     }
 
     /** @return string[] */
@@ -531,6 +558,28 @@ final class TestSuites
     private const REPO_USER_ID_2 = 7770002;
     private const REPO_USER_ID_3 = 7770003;
 
+    /** Credentials of the admin panel account the harness configures. */
+    public const PANEL_USER = 'admin';
+    public const PANEL_PASSWORD = 'harness-password';
+
+    /** Telegram ids owned by the admin-panel suites (kept apart from everything else). */
+    private const PANEL_BASE_ID = 8880000;
+
+    /** Every page of the panel, in sidebar order, plus the detail screen. */
+    private const PANEL_PAGES = [
+        'dashboard',
+        'registrations',
+        'registration',
+        'users',
+        'broadcast',
+        'broadcasts',
+        'settings',
+        'logs',
+        'audit',
+        'export',
+    ];
+
+
     private App $app;
     private FakeTransport $fake;
     private string $root;
@@ -542,6 +591,24 @@ final class TestSuites
 
     /** The registration created by the simulated flow. */
     private int $flowRegistrationId = 0;
+
+    /** True once the panel session exists and the fixtures are in the database. */
+    private bool $panelReady = false;
+
+    /** The `$_SESSION` of a signed-in administrator, captured after a real login. */
+    private array $panelSession = [];
+
+    /** Ids the panel fixtures created, so the suites can address them by name. */
+    private array $panelIds = [];
+
+    /** How many panel requests the suites drove (in process + child processes). */
+    private int $panelRequests = 0;
+
+    /** Absolute path of the generated child-process worker (see panelWorker()). */
+    private string $panelWorkerFile = '';
+
+    /** Increasing counter naming the case/result files of the child processes. */
+    private int $panelCaseNumber = 0;
 
     /**
      * Every transport call recorded while the registration flow ran.
@@ -589,8 +656,20 @@ final class TestSuites
             'Callback data budget'           => $this->callbackBudgetSuite(...),
             'Router guards'                  => $this->routerSuite(...),
             'BroadcastService'               => $this->broadcastSuite(...),
+            'Admin panel (pages)'            => $this->panelPageSuite(...),
+            'Admin panel (hostile input)'    => $this->panelHostileSuite(...),
+            'Admin panel (pathological data)' => $this->panelPathologicalSuite(...),
+            'Admin panel (controller actions)' => $this->panelActionSuite(...),
+            'Admin panel (empty database)'   => $this->panelEmptySuite(...),
+            'Diagnostics collector (self test)' => $this->diagnosticsProbeSuite(...),
             'PHP 8.1 compatibility scan'     => $this->compatibilitySuite(...),
         ];
+    }
+
+    /** How many admin-panel requests the suites drove, for the closing report. */
+    public function panelRequests(): int
+    {
+        return $this->panelRequests;
     }
 
     /* =====================================================================
@@ -2830,6 +2909,1923 @@ final class TestSuites
     }
 
     /* =====================================================================
+     | Admin panel — the harness drives admin/index.php itself
+     |======================================================================
+     | The bot half of the product was covered from the first day; the panel
+     | was not, and three "Array to string conversion" warnings shipped on
+     | ordinary, reachable panel screens while this file stayed green. These
+     | suites close that hole: every page is rendered and every controller
+     | action is executed through the real front controller, under the very
+     | error handler that decides the verdict at the end of the run.
+     |
+     | Two mechanisms are used, and the reason for the split is `exit`.
+     |
+     |  1. IN PROCESS — everything that returns normally (all page renders).
+     |     `admin/index.php` is simply required with $_GET/$_POST/$_SESSION
+     |     prepared by hand and the output captured with ob_start(). This is
+     |     the fast path, it shares the harness's error handler, and because
+     |     nothing has been written to the real output yet (the runner prints
+     |     through fwrite(STDOUT), which does not count as output), headers are
+     |     "not sent" and http_response_code() reports the status the panel
+     |     really chose.
+     |
+     |  2. IN A CHILD PROCESS — everything that ends in `exit`. Every mutating
+     |     action answers with Request::redirect() or Request::json(), both of
+     |     them declared `never`, so an in-process call would take the whole
+     |     test run down with it. Those cases are therefore handed to a small
+     |     generated worker (tests/tmp/panel/worker.php) through proc_open():
+     |     the child installs the same error handler, runs exactly one request
+     |     and writes a JSON report — output, status, diagnostics, the session
+     |     it ended with and the Telegram calls it made — from a shutdown
+     |     function, which `exit` cannot skip. The parent reads that report,
+     |     asserts on it and feeds the child's diagnostics into the run-wide
+     |     collector, so a warning raised inside a child fails the build in the
+     |     closing "PHP diagnostics" suite exactly like an in-process one.
+     |
+     |     The child deliberately writes one byte to the real output before it
+     |     dispatches. That makes headers_sent() true, which is what makes
+     |     Request::redirect() print its target instead of sending a Location
+     |     header the CLI would silently discard — the redirect target is the
+     |     interesting half of a mutating action's answer. Cases that care
+     |     about the status code instead (JSON endpoints, 404, 419) ask for the
+     |     opposite by leaving `sent` unset.
+     |
+     | Sessions: session_start() cannot run twice and Auth::start() refuses to
+     | run at all under CLI, so the harness starts exactly one session for the
+     | whole run — cookie-less, with its files inside tests/tmp — signs in once
+     | through the real Auth::attempt(), and keeps the resulting $_SESSION as a
+     | snapshot. Every later request (in process and in every child) starts
+     | from a copy of that snapshot, which gives each case a fresh flash bag,
+     | a fresh old-input bag and the same CSRF token without ever logging in
+     | again. The login and logout screens are exercised for real on top of it.
+     ===================================================================== */
+
+    /* ---------------------------------------------------------------------
+     | Pages
+     */
+
+    private function panelPageSuite(): void
+    {
+        $this->panelBoot();
+
+        $registration = $this->panelIds['pending'] ?? 0;
+
+        $pages = [
+            'dashboard'     => [['p' => 'dashboard'], ['panel-i18n', 'stat__value', '<svg']],
+            'registrations' => [['p' => 'registrations'], ['Panel Pending', '<table']],
+            'registration'  => [['p' => 'registration', 'id' => $registration], ['Panel Pending', 'tg://user?id=']],
+            'users'         => [['p' => 'users'], ['name="blocked"', 'Panel Blocked', '<table']],
+            'broadcast'     => [['p' => 'broadcast'], ['name="text"', 'data-audience']],
+            'broadcasts'    => [['p' => 'broadcasts'], ['<table']],
+            'settings'      => [['p' => 'settings'], ['name="required_channel"', 'name="welcome_extra"']],
+            'logs'          => [['p' => 'logs'], ['panel harness log line']],
+            'audit'         => [['p' => 'audit'], ['panel.login.success']],
+            'export'        => [['p' => 'export'], ['a=download']],
+        ];
+
+        foreach ($pages as $page => $expectation) {
+            [$query, $needles] = $expectation;
+
+            $this->panelPage('?p=' . $page, $query, $needles);
+        }
+
+        // The login screen is only reachable while nobody is signed in: with a
+        // session it redirects, which is a child-process case of its own.
+        $anonymous = $this->panelSession;
+        unset($anonymous[Auth::KEY_AUTH]);
+
+        $this->panelPage('?p=login (signed out)', ['p' => 'login'], ['name="username"', 'name="password"', '_token'], $anonymous);
+
+        // A pager that really pages: the fixtures are wider than one page.
+        $this->panelPage('?p=registrations&per_page=25&page=2', ['p' => 'registrations', 'per_page' => '25', 'page' => '2'], []);
+        $this->panelPage('?p=users&sort=telegram_id&dir=asc', ['p' => 'users', 'sort' => 'telegram_id', 'dir' => 'asc'], []);
+        $this->panelPage('?p=audit&per_page=100', ['p' => 'audit', 'per_page' => '100'], []);
+        $this->panelPage('?p=logs&level=info&lines=500', ['p' => 'logs', 'level' => 'info', 'lines' => '500'], []);
+        $this->panelPage(
+            '?p=registrations (filtered)',
+            [
+                'p'         => 'registrations',
+                'q'         => 'Panel',
+                'status'    => 'approved',
+                'district'  => 'asaka',
+                'direction' => 'ai_ml',
+                'date_from' => '2000-01-01',
+                'date_to'   => date('Y-m-d'),
+                'sort'      => 'full_name',
+                'dir'       => 'asc',
+            ],
+            []
+        );
+        $this->panelPage(
+            '?p=broadcast (filtered audience)',
+            ['p' => 'broadcast', 'audience' => 'district', 'district' => 'andijon_city'],
+            []
+        );
+
+        note($this->panelRequests . ' panel requests driven so far');
+    }
+
+    /* ---------------------------------------------------------------------
+     | Hostile input
+     */
+
+    private function panelHostileSuite(): void
+    {
+        $this->panelBoot();
+
+        $db = $this->app->db();
+        $before = [
+            'users'         => $db->count('users'),
+            'registrations' => $db->count('registrations'),
+            'settings'      => $db->count('settings'),
+            'broadcasts'    => $db->count('broadcasts'),
+        ];
+        $schema = $this->panelSchema();
+
+        /**
+         * One entry per hostile shape. Every key the panel reads appears at
+         * least once as an array, because that is the exact shape that shipped
+         * three "Array to string conversion" warnings past this file.
+         */
+        $variants = [
+            'array values' => array_fill_keys(
+                [
+                    'q', 'status', 'district', 'direction', 'date_from', 'date_to', 'sort', 'dir',
+                    'page', 'per_page', 'id', 'tid', 'lang', 'level', 'date', 'lines', 'actor',
+                    'action', 'target', 'ip', 'audience', 'blocked', 'registered', 'locale',
+                    'admin', 'batch', 'days', 'format', 'json', 'text', 'note', 'ids', 'bulk', 'url',
+                ],
+                ['injected']
+            ),
+            'nested arrays'       => ['q' => ['a' => ['b' => ['c' => ['d' => 'deep']]]], 'status' => [['x']], 'sort' => [[[['y']]]]],
+            'page out of range'   => ['page' => '99999999', 'per_page' => '1000000', 'lines' => '999999', 'days' => '999999'],
+            'negative ids'        => ['id' => '-5', 'tid' => '-12345', 'page' => '-3', 'per_page' => '-1', 'days' => '-90'],
+            'non numeric ids'     => ['id' => 'abc', 'tid' => '1e3', 'page' => '2abc', 'per_page' => '25.0', 'days' => 'yesterday'],
+            'unknown sort column' => ['sort' => 'id) UNION SELECT password_hash FROM users --', 'dir' => 'RANDOM()'],
+            'traversal dates'     => ['date_from' => '../../../etc/passwd', 'date_to' => '2026-13-45', 'date' => '../../../../etc/passwd'],
+            'oversized search'    => ['q' => str_repeat('ぁ', 4000), 'actor' => str_repeat('z', 5000)],
+            'control characters'  => ['q' => "a\0b\x1fc", 'status' => "pending\0", 'district' => "asaka\r\nSet-Cookie: x=1"],
+            'quotes and markup'   => ['q' => '"><script>alert(1)</script>', 'actor' => "' OR '1'='1", 'level' => '<img src=x>'],
+        ];
+
+        $mark = count(TestRunner::instance()->diagnostics());
+        $broken = [];
+        $requests = 0;
+
+        foreach (self::PANEL_PAGES as $page) {
+            foreach ($variants as $name => $query) {
+                $query['p'] = $page;
+
+                // The detail screen redirects (and therefore exits) when the id
+                // does not resolve; hostile ids for it are child cases below.
+                if ($page === 'registration') {
+                    $query['id'] = $this->panelIds['pending'] ?? 0;
+                }
+
+                $result = $this->panelRender($query);
+                $requests++;
+
+                if ($result['error'] !== null) {
+                    $broken[] = '?p=' . $page . ' [' . $name . ']: ' . $result['error'];
+
+                    continue;
+                }
+
+                if ($result['code'] !== 200) {
+                    $broken[] = '?p=' . $page . ' [' . $name . ']: HTTP ' . $result['code'];
+
+                    continue;
+                }
+
+                if (strlen($result['html']) < 2000) {
+                    $broken[] = '?p=' . $page . ' [' . $name . ']: ' . strlen($result['html']) . ' bytes only';
+
+                    continue;
+                }
+
+                // Reflected markup would be a stored/reflected XSS on the panel.
+                if (str_contains($result['html'], '<script>alert(1)</script>')) {
+                    $broken[] = '?p=' . $page . ' [' . $name . ']: reflected unescaped markup';
+                }
+            }
+        }
+
+        note($requests . ' hostile requests across ' . count(self::PANEL_PAGES) . ' pages');
+
+        eq([], $broken, 'every page survives every hostile parameter shape');
+        $this->panelQuiet($mark, 'the hostile-input pass');
+
+        // Nothing reached SQL: the schema and every row count are untouched.
+        eq($schema, $this->panelSchema(), 'the hostile pass did not change the database schema');
+
+        foreach ($before as $table => $count) {
+            eq($count, $db->count($table), 'the hostile pass left "' . $table . '" untouched (' . $count . ' rows)');
+        }
+
+        ok('the users table is still queryable afterwards', $db->fetchAll('SELECT 1 FROM ' . $db->quoteIdent('users') . ' LIMIT 1') !== null);
+    }
+
+    /* ---------------------------------------------------------------------
+     | Pathological database rows
+     */
+
+    private function panelPathologicalSuite(): void
+    {
+        $this->panelBoot();
+
+        $db = $this->app->db();
+        $now = App::now();
+        $telegramId = self::PANEL_BASE_ID + 900;
+
+        // A user whose every nullable column is NULL and whose state_data is
+        // not JSON at all.
+        $db->query(
+            'INSERT INTO ' . $db->quoteIdent('users')
+            . ' (telegram_id, username, first_name, last_name, locale, state, state_data,'
+            . ' is_admin, is_blocked, last_seen_at, created_at, updated_at)'
+            . " VALUES (?, NULL, NULL, NULL, 'zz', 'reg:???', ?, 0, 0, NULL, ?, ?)",
+            [$telegramId, '{not json at all', $now, $now]
+        );
+
+        $userId = (int) $db->fetchColumn(
+            'SELECT ' . $db->quoteIdent('id') . ' FROM ' . $db->quoteIdent('users')
+            . ' WHERE ' . $db->quoteIdent('telegram_id') . ' = ?',
+            [$telegramId]
+        );
+
+        // An application with broken JSON, unknown catalogue keys, an unknown
+        // status, an over-long name and a very long portfolio.
+        $db->query(
+            'INSERT INTO ' . $db->quoteIdent('registrations')
+            . ' (user_id, telegram_id, full_name, phone, birth_year, district, directions,'
+            . ' direction_other, portfolio, portfolio_links, status, admin_note, reviewed_by,'
+            . ' reviewed_at, source, created_at, updated_at)'
+            . ' VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)',
+            [
+                $userId,
+                $telegramId,
+                str_repeat('Ў', 400),
+                '',
+                'a_district_that_is_not_in_the_catalogue',
+                '{"broken": ',
+                str_repeat("very long portfolio line\n", 400),
+                'not json either',
+                'archived',
+                'import',
+                $now,
+                $now,
+            ]
+        );
+
+        $pathologicalId = (int) $db->fetchColumn(
+            'SELECT ' . $db->quoteIdent('id') . ' FROM ' . $db->quoteIdent('registrations')
+            . ' WHERE ' . $db->quoteIdent('telegram_id') . ' = ?',
+            [$telegramId]
+        );
+
+        ok('the pathological application was inserted', $pathologicalId > 0);
+
+        // A campaign whose `filters` is broken JSON, and one whose audience
+        // filter holds a LIST where the history screen expects a string. The
+        // latter is the exact row shape that raised "Array to string
+        // conversion" once per row on every view of ?p=broadcasts.
+        $brokenJsonCampaign = $db->insert('broadcasts', [
+            'admin_id'   => null,
+            'text'       => 'Nosoz filtrli kampaniya',
+            'parse_mode' => 'HTML',
+            'filters'    => '{"audience": "status", ',
+            'status'     => 'failed',
+            'total'      => 0,
+            'sent'       => 0,
+            'failed'     => 0,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $listFilterCampaign = $db->insert('broadcasts', [
+            'admin_id'   => null,
+            'text'       => "Ro'yxatdan o'tganlarga",
+            'parse_mode' => 'HTML',
+            'filters'    => (string) json_encode([
+                'audience'  => 'status',
+                'status'    => ['pending', 'approved'],
+                'district'  => ['asaka'],
+                'direction' => ['web', 'ai_ml'],
+            ]),
+            'status'      => 'done',
+            'total'       => 3,
+            'sent'        => 2,
+            'failed'      => 1,
+            'created_at'  => $now,
+            'updated_at'  => $now,
+            'finished_at' => $now,
+        ]);
+
+        // An audit row whose meta column is not JSON, and one with NULLs.
+        $db->insert('audit_log', [
+            'actor'      => 'panel:admin',
+            'action'     => 'harness.pathological',
+            'target'     => 'registration:' . $pathologicalId,
+            'meta'       => '{"unterminated": ',
+            'ip'         => null,
+            'created_at' => $now,
+        ]);
+
+        $db->insert('audit_log', [
+            'actor'      => 'tg:0',
+            'action'     => 'harness.nulls',
+            'target'     => null,
+            'meta'       => null,
+            'ip'         => null,
+            'created_at' => $now,
+        ]);
+
+        // A settings row holding invalid JSON must not take the screen down.
+        // The repository caches its rows, so the raw INSERT needs a flush to
+        // be seen at all — otherwise the pass would prove nothing.
+        $db->insert('settings', ['name' => 'welcome_extra', 'value' => '{"broken"', 'updated_at' => $now]);
+        $this->app->settings()->flush();
+
+        $mark = count(TestRunner::instance()->diagnostics());
+        $broken = [];
+
+        foreach (self::PANEL_PAGES as $page) {
+            $query = ['p' => $page];
+
+            if ($page === 'registration') {
+                $query['id'] = $pathologicalId;
+            }
+
+            $result = $this->panelRender($query);
+
+            if ($result['error'] !== null) {
+                $broken[] = '?p=' . $page . ': ' . $result['error'];
+
+                continue;
+            }
+
+            if ($result['code'] !== 200 || strlen($result['html']) < 2000) {
+                $broken[] = '?p=' . $page . ': HTTP ' . $result['code'] . ', ' . strlen($result['html']) . ' bytes';
+
+                continue;
+            }
+
+            $this->panelMarkup('?p=' . $page . ' (pathological)', $result['html']);
+        }
+
+        eq([], $broken, 'every page renders against the pathological database');
+        $this->panelQuiet($mark, 'the pathological-data pass');
+
+        // The pass only proves something if the broken rows were really on the
+        // screens: a campaign that fell off page one tests nothing at all.
+        $history = $this->panelRender(['p' => 'broadcasts']);
+        ok('the campaign with the broken filter JSON is on the history screen', str_contains($history['html'], 'Nosoz filtrli kampaniya'));
+        ok('the campaign with list-shaped filters is on the history screen', str_contains($history['html'], "Ro&#039;yxatdan o&#039;tganlarga"));
+
+        // The detail screen really did show the broken row rather than a stub.
+        $detail = $this->panelRender(['p' => 'registration', 'id' => $pathologicalId]);
+        ok('the pathological application is shown, not skipped', str_contains($detail['html'], 'Ў'));
+        ok(
+            'no array ever reaches the markup as the literal string "Array"',
+            !str_contains($detail['html'], '>Array<') && !str_contains($detail['html'], '"Array"')
+        );
+        ok(
+            'the unknown status value does not break the badge',
+            str_contains($detail['html'], 'badge')
+        );
+
+        // Clean up so the later suites work on the deliberate fixtures only.
+        $db->delete('registrations', ['id' => $pathologicalId]);
+        $db->delete('users', ['telegram_id' => $telegramId]);
+        $db->delete('settings', ['name' => 'welcome_extra']);
+        $db->delete('audit_log', ['action' => 'harness.pathological']);
+        $db->delete('audit_log', ['action' => 'harness.nulls']);
+        $db->query(
+            'DELETE FROM ' . $db->quoteIdent('broadcasts') . ' WHERE ' . $db->quoteIdent('id') . ' IN (?, ?)',
+            [$brokenJsonCampaign, $listFilterCampaign]
+        );
+        $this->app->settings()->flush();
+    }
+
+    /* ---------------------------------------------------------------------
+     | Controller actions (child processes)
+     */
+
+    private function panelActionSuite(): void
+    {
+        $this->panelBoot();
+
+        $registrations = $this->app->registrations();
+        $users = $this->app->users();
+        $ids = $this->panelIds;
+
+        /* -- routing, authentication and CSRF ---------------------------- */
+
+        $guard = $this->panelRun('an anonymous request', [
+            'get'     => ['p' => 'dashboard'],
+            'session' => [],
+            'sent'    => true,
+        ]);
+        ok('an anonymous request is sent to the login screen', str_contains($guard['output'], 'p=login'));
+
+        $notFound = $this->panelRun('?p=does_not_exist', ['get' => ['p' => 'does_not_exist']]);
+        eq(404, $notFound['status'], 'an unknown page answers 404');
+        ok('the 404 page renders the error template', str_contains($notFound['output'], 'badge--warn'));
+        ok('the 404 page is a complete document', str_contains($notFound['output'], '</html>'));
+        $this->panelMarkup('the 404 page', $notFound['output']);
+
+        $csrf = $this->panelRun('a POST with a stale CSRF token', [
+            'method' => 'POST',
+            'get'    => ['p' => 'users', 'a' => 'block'],
+            'post'   => ['tid' => (string) ($ids['user'] ?? 0)],
+            'csrf'   => 'invalid',
+        ]);
+        eq(419, $csrf['status'], 'a stale CSRF token answers 419');
+        ok('the 419 page explains itself', str_contains($csrf['output'], '419'));
+
+        $login = $this->panelRun('?p=login (correct credentials)', [
+            'method'  => 'POST',
+            'get'     => ['p' => 'login'],
+            'post'    => ['username' => self::PANEL_USER, 'password' => self::PANEL_PASSWORD],
+            'session' => [],
+            'sent'    => true,
+        ]);
+        ok('a correct login lands on the dashboard', str_contains($login['output'], 'p=dashboard'));
+        ok('a correct login fills the session', isset($login['session'][Auth::KEY_AUTH]['user']));
+
+        $badLogin = $this->panelRun('?p=login (wrong password)', [
+            'method'  => 'POST',
+            'get'     => ['p' => 'login'],
+            'post'    => ['username' => self::PANEL_USER, 'password' => 'definitely-not-it'],
+            'session' => [],
+        ]);
+        eq(200, $badLogin['status'], 'a refused login re-renders the form');
+        ok('a refused login does not open a session', !isset($badLogin['session'][Auth::KEY_AUTH]));
+        ok('a refused login does not say which half was wrong', !str_contains(strtolower($badLogin['output']), 'password is'));
+
+        $loginWhenIn = $this->panelRun('?p=login (already signed in)', ['get' => ['p' => 'login'], 'sent' => true]);
+        ok('the login screen redirects a signed-in operator', str_contains($loginWhenIn['output'], 'p=dashboard'));
+
+        $logoutGet = $this->panelRun('?p=logout over GET', ['get' => ['p' => 'logout'], 'sent' => true]);
+        ok('GET logout is refused (forced-logout hole)', str_contains($logoutGet['output'], 'p=dashboard'));
+
+        $logout = $this->panelRun('?p=logout over POST', [
+            'method' => 'POST',
+            'get'    => ['p' => 'logout'],
+            'sent'   => true,
+        ]);
+        ok('POST logout returns to the login screen', str_contains($logout['output'], 'p=login'));
+        ok('POST logout empties the identity', !isset($logout['session'][Auth::KEY_AUTH]));
+
+        $search = $this->panelRun('?p=dashboard&a=search', [
+            'get'  => ['p' => 'dashboard', 'a' => 'search', 'q' => 'Panel'],
+            'sent' => true,
+        ]);
+        ok('the quick search forwards to the list', str_contains($search['output'], 'p=registrations'));
+        ok('the quick search carries the term', str_contains($search['output'], 'q=Panel'));
+
+        $emptySearch = $this->panelRun('?p=dashboard&a=search (empty)', [
+            'get'  => ['p' => 'dashboard', 'a' => 'search', 'q' => '   '],
+            'sent' => true,
+        ]);
+        ok('an empty quick search just opens the list', !str_contains($emptySearch['output'], 'q='));
+
+        /* -- registrations ----------------------------------------------- */
+
+        foreach (['missing' => ['id' => '999999'], 'array' => ['id' => ['1']], 'negative' => ['id' => '-1']] as $shape => $query) {
+            $detail = $this->panelRun('?p=registration with an ' . $shape . ' id', [
+                'get'  => array_merge(['p' => 'registration'], $query),
+                'sent' => true,
+            ]);
+            ok('a registration detail with an ' . $shape . ' id redirects to the list', str_contains($detail['output'], 'p=registrations'));
+        }
+
+        $approve = $this->panelRun('?p=registrations&a=approve', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'approve'],
+            'post'   => ['id' => (string) $ids['approve'], 'note' => 'Tasdiqlandi (harness)'],
+            'sent'   => true,
+        ]);
+        ok('approve redirects back to the list', str_contains($approve['output'], 'p=registrations'));
+        eq('approved', (string) ($registrations->findById($ids['approve'])['status'] ?? ''), 'approve writes the new status');
+        eq('Tasdiqlandi (harness)', (string) ($registrations->findById($ids['approve'])['admin_note'] ?? ''), 'approve stores the note');
+        ok('approve notifies the applicant through the bot', in_array('sendMessage', $approve['calls'], true));
+
+        $reject = $this->panelRun('?p=registrations&a=reject', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'reject'],
+            'post'   => ['id' => (string) $ids['reject']],
+            'sent'   => true,
+        ]);
+        ok('reject redirects back to the list', str_contains($reject['output'], 'p=registrations'));
+        eq('rejected', (string) ($registrations->findById($ids['reject'])['status'] ?? ''), 'reject writes the new status');
+
+        $approveGet = $this->panelRun('?p=registrations&a=approve over GET', [
+            'get'  => ['p' => 'registrations', 'a' => 'approve', 'id' => (string) $ids['note']],
+            'sent' => true,
+        ]);
+        ok('a moderation action refuses GET', str_contains($approveGet['output'], 'p=registrations'));
+        eq('pending', (string) ($registrations->findById($ids['note'])['status'] ?? ''), 'the GET attempt changed nothing');
+
+        $note = $this->panelRun('?p=registration&a=note', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registration', 'a' => 'note', 'id' => (string) $ids['note']],
+            'post'   => ['id' => (string) $ids['note'], 'note' => "Ichki izoh\nikkinchi qator"],
+            'sent'   => true,
+        ]);
+        ok('saving a note returns to the detail screen', str_contains($note['output'], 'p=registration'));
+        ok('the note is stored', str_contains((string) ($registrations->findById($ids['note'])['admin_note'] ?? ''), 'Ichki izoh'));
+
+        $noteStatus = $this->panelRun('?p=registration&a=note (with a status change)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registration', 'a' => 'note', 'id' => (string) $ids['note']],
+            'post'   => ['id' => (string) $ids['note'], 'status' => 'approved', 'note' => 'Status bilan'],
+            'sent'   => true,
+        ]);
+        ok('the status form redirects back', str_contains($noteStatus['output'], 'p=registration'));
+        eq('approved', (string) ($registrations->findById($ids['note'])['status'] ?? ''), 'the status form changes the status');
+
+        $message = $this->panelRun('?p=registration&a=message', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registration', 'a' => 'message', 'id' => (string) $ids['message']],
+            'post'   => ['id' => (string) $ids['message'], 'message' => "Salom <b>Ali</b>\nyangilik bor"],
+            'sent'   => true,
+        ]);
+        ok('sending a message returns to the detail screen', str_contains($message['output'], 'p=registration'));
+        ok('the message really went through the bot', in_array('sendMessage', $message['calls'], true));
+
+        $emptyMessage = $this->panelRun('?p=registration&a=message (empty)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registration', 'a' => 'message', 'id' => (string) $ids['message']],
+            'post'   => ['id' => (string) $ids['message'], 'message' => "   \n  "],
+            'sent'   => true,
+        ]);
+        ok('an empty message is refused', !in_array('sendMessage', $emptyMessage['calls'], true));
+
+        $arrayMessage = $this->panelRun('?p=registration&a=message (array body)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registration', 'a' => 'message', 'id' => (string) $ids['message']],
+            'post'   => ['id' => (string) $ids['message'], 'message' => ['injected']],
+            'sent'   => true,
+        ]);
+        ok('an array message body is refused, not stringified', !in_array('sendMessage', $arrayMessage['calls'], true));
+
+        $bulkApprove = $this->panelRun('?p=registrations&a=bulk (approve)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'bulk'],
+            'post'   => ['bulk' => 'approve', 'ids' => [(string) $ids['bulk_a'], (string) $ids['bulk_b'], 'not-an-id', ['nested']]],
+            'sent'   => true,
+        ]);
+        ok('a bulk approve redirects back to the list', str_contains($bulkApprove['output'], 'p=registrations'));
+        eq('approved', (string) ($registrations->findById($ids['bulk_a'])['status'] ?? ''), 'the first bulk row is approved');
+        eq('approved', (string) ($registrations->findById($ids['bulk_b'])['status'] ?? ''), 'the second bulk row is approved');
+
+        $bulkReject = $this->panelRun('?p=registrations&a=bulk (reject)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'bulk'],
+            'post'   => ['bulk' => 'reject', 'ids' => [(string) $ids['bulk_b']]],
+            'sent'   => true,
+        ]);
+        eq('rejected', (string) ($registrations->findById($ids['bulk_b'])['status'] ?? ''), 'a bulk reject writes the status');
+
+        $bulkNone = $this->panelRun('?p=registrations&a=bulk (nothing selected)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'bulk'],
+            'post'   => ['bulk' => 'approve', 'ids' => []],
+            'sent'   => true,
+        ]);
+        ok('an empty bulk selection is refused with a message', str_contains($bulkNone['output'], 'p=registrations'));
+
+        $bulkUnknown = $this->panelRun('?p=registrations&a=bulk (unknown operation)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'bulk'],
+            'post'   => ['bulk' => 'drop-table', 'ids' => [(string) $ids['bulk_a']]],
+            'sent'   => true,
+        ]);
+        ok('an unknown bulk operation is refused', str_contains($bulkUnknown['output'], 'p=registrations'));
+        eq('approved', (string) ($registrations->findById($ids['bulk_a'])['status'] ?? ''), 'the refused bulk operation changed nothing');
+
+        $bulkDelete = $this->panelRun('?p=registrations&a=bulk (delete)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registrations', 'a' => 'bulk'],
+            'post'   => ['bulk' => 'delete', 'ids' => [(string) $ids['bulk_c']]],
+            'sent'   => true,
+        ]);
+        ok('a bulk delete redirects back to the list', str_contains($bulkDelete['output'], 'p=registrations'));
+        eq(null, $registrations->findById($ids['bulk_c']), 'the bulk deleted application is gone');
+
+        $delete = $this->panelRun('?p=registration&a=delete', [
+            'method' => 'POST',
+            'get'    => ['p' => 'registration', 'a' => 'delete', 'id' => (string) $ids['delete']],
+            'post'   => ['id' => (string) $ids['delete']],
+            'sent'   => true,
+        ]);
+        ok('deleting an application returns to the list, never to the detail screen', str_contains($delete['output'], 'p=registrations'));
+        ok('the deleted detail screen is not offered again', !str_contains($delete['output'], 'p=registration&'));
+        eq(null, $registrations->findById($ids['delete']), 'the deleted application is gone');
+
+        /* -- users -------------------------------------------------------- */
+
+        $block = $this->panelRun('?p=users&a=block', [
+            'method' => 'POST',
+            'get'    => ['p' => 'users', 'a' => 'block'],
+            'post'   => ['tid' => (string) $ids['user']],
+            'sent'   => true,
+        ]);
+        ok('blocking redirects back to the user list', str_contains($block['output'], 'p=users'));
+        eq(1, (int) ($users->findByTelegramId($ids['user'])['is_blocked'] ?? 0), 'the user is blocked');
+
+        $unblock = $this->panelRun('?p=users&a=unblock', [
+            'method' => 'POST',
+            'get'    => ['p' => 'users', 'a' => 'unblock'],
+            'post'   => ['tid' => (string) $ids['user']],
+            'sent'   => true,
+        ]);
+        ok('unblocking redirects back to the user list', str_contains($unblock['output'], 'p=users'));
+        eq(0, (int) ($users->findByTelegramId($ids['user'])['is_blocked'] ?? 1), 'the user is unblocked again');
+
+        $grant = $this->panelRun('?p=users&a=admin', [
+            'method' => 'POST',
+            'get'    => ['p' => 'users', 'a' => 'admin'],
+            'post'   => ['tid' => (string) $ids['user']],
+            'sent'   => true,
+        ]);
+        ok('granting the admin flag redirects back', str_contains($grant['output'], 'p=users'));
+        eq(1, (int) ($users->findByTelegramId($ids['user'])['is_admin'] ?? 0), 'the bot admin flag is set');
+
+        $revoke = $this->panelRun('?p=users&a=revoke', [
+            'method' => 'POST',
+            'get'    => ['p' => 'users', 'a' => 'revoke'],
+            'post'   => ['tid' => (string) $ids['user']],
+            'sent'   => true,
+        ]);
+        ok('revoking the admin flag redirects back', str_contains($revoke['output'], 'p=users'));
+        eq(0, (int) ($users->findByTelegramId($ids['user'])['is_admin'] ?? 1), 'the bot admin flag is cleared');
+
+        $unknownUser = $this->panelRun('?p=users&a=block (unknown user)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'users', 'a' => 'block'],
+            'post'   => ['tid' => '123456789'],
+            'sent'   => true,
+        ]);
+        ok('blocking an unknown user is refused', str_contains($unknownUser['output'], 'p=users'));
+
+        $blockGet = $this->panelRun('?p=users&a=block over GET', [
+            'get'  => ['p' => 'users', 'a' => 'block', 'tid' => (string) $ids['user']],
+            'sent' => true,
+        ]);
+        ok('a user action refuses GET', str_contains($blockGet['output'], 'p=users'));
+        eq(0, (int) ($users->findByTelegramId($ids['user'])['is_blocked'] ?? 1), 'the GET attempt changed nothing');
+
+        /* -- settings ----------------------------------------------------- */
+
+        $save = $this->panelRun('?p=settings&a=save', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'save'],
+            'post'   => [
+                'registration_open' => '1',
+                'ask_language'      => 'on',
+                'required_channel'  => 'https://t.me/andijon_ai_talents',
+                'welcome_extra'     => "Qo'shimcha xabar",
+            ],
+            'sent' => true,
+        ]);
+        ok('saving the settings redirects back to the screen', str_contains($save['output'], 'p=settings'));
+
+        // The repository caches its rows for the length of a request; this
+        // process has been reading them since the first dashboard render.
+        $this->app->settings()->flush();
+
+        eq('@andijon_ai_talents', (string) $this->app->settings()->get('required_channel'), 'the t.me link is normalised to a @username');
+        eq("Qo'shimcha xabar", (string) $this->app->settings()->get('welcome_extra'), 'the extra welcome text is stored');
+        eq(true, $this->app->settings()->get('registration_open'), 'the registration switch is stored as a boolean');
+
+        $arraySave = $this->panelRun('?p=settings&a=save (array values)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'save'],
+            'post'   => [
+                'registration_open' => ['1'],
+                'ask_language'      => ['on'],
+                'required_channel'  => ['@evil'],
+                'welcome_extra'     => ['injected'],
+            ],
+            'sent' => true,
+        ]);
+        ok('an array-valued settings POST still redirects', str_contains($arraySave['output'], 'p=settings'));
+
+        $this->app->settings()->flush();
+
+        ok(
+            'an array welcome text is never stored as the literal "Array"',
+            (string) $this->app->settings()->get('welcome_extra') !== 'Array'
+        );
+        ok(
+            'an array checkbox is never truthy',
+            $this->app->settings()->get('registration_open') === false
+        );
+
+        $badChannel = $this->panelRun('?p=settings&a=save (impossible channel)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'save'],
+            'post'   => ['required_channel' => '@@@', 'welcome_extra' => 'x'],
+            'sent'   => true,
+        ]);
+        ok('an impossible channel is refused', str_contains($badChannel['output'], 'p=settings'));
+
+        $this->app->settings()->flush();
+
+        ok('the refused channel was not stored', (string) $this->app->settings()->get('required_channel') !== '@@@');
+
+        $saveGet = $this->panelRun('?p=settings&a=save over GET', [
+            'get'  => ['p' => 'settings', 'a' => 'save'],
+            'sent' => true,
+        ]);
+        ok('saving the settings refuses GET', str_contains($saveGet['output'], 'p=settings'));
+
+        $webhook = $this->panelRun('?p=settings&a=webhook_set', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'webhook_set'],
+            'post'   => ['url' => 'https://tests.invalid/bot/index.php', 'drop_pending' => '1'],
+            'queue'  => ['{"ok":true,"result":true,"description":"Webhook was set"}'],
+            'sent'   => true,
+        ]);
+        ok('setting the webhook redirects back', str_contains($webhook['output'], 'p=settings'));
+        ok('setWebhook was called', in_array('setWebhook', $webhook['calls'], true));
+
+        $badWebhook = $this->panelRun('?p=settings&a=webhook_set (http url)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'webhook_set'],
+            'post'   => ['url' => 'http://insecure.invalid/hook'],
+            'sent'   => true,
+        ]);
+        ok('a plain-http webhook URL is refused', !in_array('setWebhook', $badWebhook['calls'], true));
+
+        $deleteHook = $this->panelRun('?p=settings&a=webhook_delete', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'webhook_delete'],
+            'post'   => ['drop_pending' => '1'],
+            'queue'  => ['{"ok":true,"result":true}'],
+            'sent'   => true,
+        ]);
+        ok('deleting the webhook redirects back', str_contains($deleteHook['output'], 'p=settings'));
+        ok('deleteWebhook was called', in_array('deleteWebhook', $deleteHook['calls'], true));
+
+        $testBot = $this->panelRun('?p=settings&a=test_bot', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'test_bot'],
+            'queue'  => ['{"ok":true,"result":{"id":1,"is_bot":true,"username":"AndijonAiTalentsTestBot"}}'],
+            'sent'   => true,
+        ]);
+        ok('the bot health check redirects back', str_contains($testBot['output'], 'p=settings'));
+        ok('getMe was called', in_array('getMe', $testBot['calls'], true));
+
+        $clearLogs = $this->panelRun('?p=settings&a=clear_logs', [
+            'method' => 'POST',
+            'get'    => ['p' => 'settings', 'a' => 'clear_logs'],
+            'sent'   => true,
+        ]);
+        ok('clearing the logs redirects back', str_contains($clearLogs['output'], 'p=settings'));
+        eq([], glob($this->tmpDir . '/logs/bot-*.log') ?: [], 'every rotated log file was removed');
+
+        /* -- broadcasts --------------------------------------------------- */
+
+        $count = $this->panelRun('?p=broadcast&a=count', [
+            'get' => ['p' => 'broadcast', 'a' => 'count', 'audience' => 'all', 'format' => 'json'],
+        ]);
+        eq(200, $count['status'], 'the audience counter answers 200');
+        $countBody = json_decode($count['output'], true);
+        ok('the audience counter answers JSON', is_array($countBody) && ($countBody['ok'] ?? null) === true);
+        ok('the audience counter reports a number', is_int($countBody['count'] ?? null) && $countBody['count'] > 0);
+
+        $start = $this->panelRun('?p=broadcast&a=start', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'start', 'format' => 'json'],
+            'post'   => ['text' => 'Harness kampaniyasi', 'audience' => 'registered'],
+        ]);
+        eq(200, $start['status'], 'starting a campaign answers 200');
+        $startBody = json_decode($start['output'], true);
+        ok('starting a campaign answers JSON', is_array($startBody) && ($startBody['ok'] ?? null) === true);
+
+        $campaign = (int) ($startBody['id'] ?? 0);
+        ok('the campaign was created', $campaign > 0);
+        ok('the campaign froze its audience', (int) ($startBody['total'] ?? 0) > 0);
+
+        $emptyText = $this->panelRun('?p=broadcast&a=start (no text)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'start', 'format' => 'json'],
+            'post'   => ['text' => '   ', 'audience' => 'all'],
+        ]);
+        eq(422, $emptyText['status'], 'a campaign without text answers 422');
+
+        $emptyAudience = $this->panelRun('?p=broadcast&a=start (empty audience)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'start', 'format' => 'json'],
+            'post'   => ['text' => 'Hech kimga', 'audience' => 'district', 'district' => 'ulugnor'],
+        ]);
+        eq(422, $emptyAudience['status'], 'a campaign without recipients answers 422');
+
+        $runGet = $this->panelRun('?p=broadcast&a=run over GET', [
+            'get' => ['p' => 'broadcast', 'a' => 'run', 'id' => (string) $campaign, 'format' => 'json'],
+        ]);
+        eq(405, $runGet['status'], 'the batch sender refuses GET');
+
+        $runMissing = $this->panelRun('?p=broadcast&a=run (unknown campaign)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'run', 'id' => '999999', 'format' => 'json'],
+        ]);
+        eq(404, $runMissing['status'], 'the batch sender answers 404 for an unknown campaign');
+
+        $run = $this->panelRun('?p=broadcast&a=run', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'run', 'id' => (string) $campaign, 'batch' => '2', 'format' => 'json'],
+        ]);
+        eq(200, $run['status'], 'one batch answers 200');
+        $runBody = json_decode($run['output'], true);
+        ok('one batch reports its progress', is_array($runBody) && ($runBody['ok'] ?? null) === true);
+        ok('one batch actually delivered something', (int) ($runBody['sent'] ?? 0) > 0);
+        ok('one batch sent through the bot', in_array('sendMessage', $run['calls'], true));
+
+        $pause = $this->panelRun('?p=broadcast&a=pause', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'pause', 'id' => (string) $campaign, 'format' => 'json'],
+        ]);
+        eq(200, $pause['status'], 'pausing a campaign answers 200');
+        eq('paused', (string) ($this->app->broadcasts()->find($campaign)['status'] ?? ''), 'the campaign is paused');
+
+        $resume = $this->panelRun('?p=broadcast&a=resume', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'resume', 'id' => (string) $campaign, 'format' => 'json'],
+        ]);
+        eq(200, $resume['status'], 'resuming a campaign answers 200');
+        eq('running', (string) ($this->app->broadcasts()->find($campaign)['status'] ?? ''), 'the campaign is running again');
+
+        $cancel = $this->panelRun('?p=broadcast&a=cancel (form)', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'cancel', 'id' => (string) $campaign],
+            'sent'   => true,
+        ]);
+        ok('cancelling from a form redirects to the composer', str_contains($cancel['output'], 'p=broadcast'));
+
+        $test = $this->panelRun('?p=broadcast&a=test', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'test'],
+            'post'   => ['text' => "Sinov <b>xabari</b>"],
+            'sent'   => true,
+        ]);
+        ok('the test send redirects back to the composer', str_contains($test['output'], 'p=broadcast'));
+        ok('the test send went through the bot', in_array('sendMessage', $test['calls'], true));
+
+        $deleteCampaign = $this->panelRun('?p=broadcast&a=delete', [
+            'method' => 'POST',
+            'get'    => ['p' => 'broadcast', 'a' => 'delete', 'id' => (string) $campaign, 'format' => 'json'],
+        ]);
+        eq(200, $deleteCampaign['status'], 'deleting a campaign answers 200');
+        eq(null, $this->app->broadcasts()->find($campaign), 'the campaign is gone');
+        eq(0, $this->app->broadcasts()->countTargets($campaign), 'its queued recipients went with it');
+
+        /* -- logs, audit and export --------------------------------------- */
+
+        $this->app->logger()->info('panel harness download probe', ['case' => 'download']);
+        $logDate = (string) (($this->app->logger()->files()[0]) ?? '');
+
+        $download = $this->panelRun('?p=logs&a=download', [
+            'get'  => ['p' => 'logs', 'a' => 'download', 'date' => $logDate],
+        ]);
+        // LogController::download() unwinds every output buffer before it calls
+        // readfile(), so the file lands on the child's real stdout.
+        ok('the log download serves the file itself', str_contains($download['stdout'], 'panel harness download probe'));
+
+        $missingLog = $this->panelRun('?p=logs&a=download (no such day)', [
+            'get'  => ['p' => 'logs', 'a' => 'download', 'date' => '1999-01-01'],
+            'sent' => true,
+        ]);
+        ok(
+            'an unknown log date falls back to the newest file instead of failing',
+            str_contains($missingLog['stdout'], 'panel harness download probe')
+        );
+
+        $traversalLog = $this->panelRun('?p=logs&a=download (traversal date)', [
+            'get'  => ['p' => 'logs', 'a' => 'download', 'date' => '../../../../etc/passwd'],
+            'sent' => true,
+        ]);
+        ok('a traversal-shaped log date never serves a file outside the log directory', !str_contains($traversalLog['stdout'], 'root:'));
+
+        $purgeGet = $this->panelRun('?p=audit&a=purge over GET', [
+            'get'  => ['p' => 'audit', 'a' => 'purge', 'days' => '1'],
+            'sent' => true,
+        ]);
+        ok('the audit purge refuses GET', str_contains($purgeGet['output'], 'p=audit'));
+
+        // An entry from a year ago must go, today's must stay.
+        $this->app->db()->insert('audit_log', [
+            'actor'      => 'panel:' . self::PANEL_USER,
+            'action'     => 'harness.ancient',
+            'target'     => null,
+            'meta'       => null,
+            'ip'         => '127.0.0.1',
+            'created_at' => date('Y-m-d H:i:s', time() - (400 * 86400)),
+        ]);
+
+        $recentBefore = $this->app->audit()->countAll(['date_from' => date('Y-m-d')]);
+
+        $purge = $this->panelRun('?p=audit&a=purge', [
+            'method' => 'POST',
+            'get'    => ['p' => 'audit', 'a' => 'purge'],
+            'post'   => ['days' => '90'],
+            'sent'   => true,
+        ]);
+        ok('the audit purge redirects back to the trail', str_contains($purge['output'], 'p=audit'));
+        eq(
+            0,
+            $this->app->db()->count('audit_log', ['action' => 'harness.ancient']),
+            'a 90 day purge removes the year-old entry'
+        );
+        ok(
+            "a 90 day purge keeps today's entries",
+            $this->app->audit()->countAll(['date_from' => date('Y-m-d')]) >= $recentBefore
+        );
+
+        $export = $this->panelRun('?p=export&a=download', [
+            'get' => ['p' => 'export', 'a' => 'download'],
+        ]);
+        ok('the export answers with a ZIP container (XLSX)', str_starts_with($export['output'], "PK\x03\x04"));
+        ok('the export is not an empty file', strlen($export['output']) > 2000);
+
+        $emptyExport = $this->panelRun('?p=export&a=download (filter matches nothing)', [
+            'get'  => ['p' => 'export', 'a' => 'download', 'q' => 'zzzz-nothing-matches-this-zzzz'],
+            'sent' => true,
+        ]);
+        ok('an empty export sends the operator back instead of a broken file', str_contains($emptyExport['output'], 'p=registrations'));
+
+        note($this->panelCaseNumber . ' panel requests ran in their own process');
+    }
+
+    /* ---------------------------------------------------------------------
+     | Empty database
+     */
+
+    private function panelEmptySuite(): void
+    {
+        $this->panelBoot();
+
+        $database = $this->tmpDir . '/panel/empty.sqlite';
+
+        foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+            if (is_file($file)) {
+                @unlink($file);
+            }
+        }
+
+        $pages = [];
+
+        foreach (self::PANEL_PAGES as $page) {
+            // ?p=registration needs a row to show; with none it redirects, and
+            // that is asserted by the action suite instead.
+            if ($page === 'registration') {
+                continue;
+            }
+
+            $pages[] = ['label' => '?p=' . $page, 'get' => ['p' => $page]];
+        }
+
+        $pages[] = ['label' => '?p=login', 'get' => ['p' => 'login'], 'session' => []];
+
+        $result = $this->panelRun('the empty-database pass', [
+            'database' => $database,
+            'migrate'  => true,
+            'pages'    => $pages,
+        ]);
+
+        eq(count($pages), count($result['pages']), 'every page rendered against a migrated but empty database');
+
+        foreach ($result['pages'] as $page) {
+            $label = (string) ($page['label'] ?? '?');
+
+            if (($page['error'] ?? null) !== null) {
+                ok($label . ' renders its empty state', false);
+
+                continue;
+            }
+
+            ok($label . ' answers 200 on an empty database', (int) ($page['code'] ?? 0) === 200);
+            ok($label . ' still renders a full document', str_contains((string) $page['html'], '</html>'));
+
+            $this->panelMarkup($label . ' (empty database)', (string) $page['html']);
+            $this->panelLangKeys($label . ' (empty database)', (string) $page['html']);
+        }
+
+        // A second pass in Russian: panel_locale() caches its answer per
+        // process, so the only honest way to render the panel in ru is a fresh
+        // one — which is exactly what the child process gives us.
+        $russian = [];
+
+        foreach (self::PANEL_PAGES as $page) {
+            if ($page === 'registration') {
+                continue;
+            }
+
+            $russian[] = ['label' => '?p=' . $page . '&lang=ru', 'get' => ['p' => $page, 'lang' => 'ru']];
+        }
+
+        $ru = $this->panelRun('the Russian interface pass', ['pages' => $russian]);
+
+        eq(count($russian), count($ru['pages']), 'every page renders in Russian too');
+
+        foreach ($ru['pages'] as $page) {
+            $label = (string) ($page['label'] ?? '?');
+            $html = (string) $page['html'];
+
+            ok($label . ' answers 200', (int) ($page['code'] ?? 0) === 200);
+            ok($label . ' is marked as Russian', str_contains($html, 'lang="ru"'));
+
+            $this->panelMarkup($label, $html);
+            $this->panelLangKeys($label, $html);
+        }
+    }
+
+    /* ---------------------------------------------------------------------
+     | The collector that decides the verdict
+     */
+
+    private function diagnosticsProbeSuite(): void
+    {
+        // In process: a deliberate "Array to string conversion" must be seen by
+        // the harness's own error handler. probe() keeps it out of the verdict.
+        $collected = TestRunner::instance()->probe(static function (): void {
+            $array = ['x'];
+            $ignored = 'value: ' . $array;
+            unset($ignored);
+        });
+
+        eq(1, count($collected), 'an in-process PHP warning is caught by the harness error handler');
+        ok(
+            'the caught warning is the one that was raised',
+            isset($collected[0]) && str_contains($collected[0], 'Array to string conversion')
+        );
+
+        // In a child process: the same warning must travel back in the report,
+        // which is what makes a panel diagnostic fail the build.
+        $probe = $this->panelRun('the child-process diagnostics probe', [
+            'get'   => ['p' => 'dashboard'],
+            'probe' => true,
+            'quiet' => true,
+        ]);
+
+        eq(1, count($probe['diagnostics']), 'a warning raised inside a child process is reported back');
+        ok(
+            'the child reports the warning it raised',
+            isset($probe['diagnostics'][0]) && str_contains($probe['diagnostics'][0], 'Array to string conversion')
+        );
+
+        note('a PHP warning on any panel path fails the run — proven, not assumed');
+    }
+
+    /* =====================================================================
+     | Admin panel — plumbing
+     ===================================================================== */
+
+    /**
+     * Start the panel session, sign in for real and seed the fixtures.
+     *
+     * Runs exactly once; every panel suite calls it so the order of the suites
+     * inside all() stays free.
+     */
+    private function panelBoot(): void
+    {
+        if ($this->panelReady) {
+            return;
+        }
+
+        $this->panelReady = true;
+
+        $sessions = $this->tmpDir . '/sessions';
+
+        if (!is_dir($sessions) && !@mkdir($sessions, 0775, true) && !is_dir($sessions)) {
+            skip('the admin panel suites', 'cannot create ' . $sessions);
+
+            return;
+        }
+
+        // One cookie-less session for the whole run, with its files inside
+        // tests/tmp. Auth::start() sees an active session and leaves it alone,
+        // which is what makes the panel work under CLI at all.
+        @ini_set('session.use_cookies', '0');
+        @ini_set('session.cache_limiter', '');
+        @ini_set('session.save_path', $sessions);
+
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+
+        ok('the harness opened a session for the panel', session_status() === PHP_SESSION_ACTIVE);
+
+        foreach ($this->panelServer() as $key => $value) {
+            $_SERVER[$key] = $value;
+        }
+
+        $auth = new Auth($this->app);
+        $GLOBALS['AITALENTS_PANEL_AUTH'] = $auth;
+
+        ok('a wrong panel password is refused', !$auth->attempt(self::PANEL_USER, 'not-the-password', '127.0.0.1'));
+        ok('an unknown panel user is refused', !$auth->attempt('root', self::PANEL_PASSWORD, '127.0.0.1'));
+        ok('the configured panel credentials are accepted', $auth->attempt(self::PANEL_USER, self::PANEL_PASSWORD, '127.0.0.1'));
+        eq(self::PANEL_USER, $auth->user(), 'the session carries the administrator name');
+        ok('the session passes the authentication check', $auth->check());
+
+        $this->panelSession = $_SESSION;
+
+        ok('the snapshot holds an identity', isset($this->panelSession[Auth::KEY_AUTH]));
+
+        $this->panelSeed();
+    }
+
+    /**
+     * The `$_SERVER` a panel request runs with, identical in every process.
+     *
+     * The user agent must stay constant: Auth binds the session to a hash of it.
+     *
+     * @return array<string,mixed>
+     */
+    private function panelServer(): array
+    {
+        return [
+            'REQUEST_METHOD'       => 'GET',
+            'SCRIPT_NAME'          => '/admin/index.php',
+            'PHP_SELF'             => '/admin/index.php',
+            'REQUEST_URI'          => '/admin/index.php',
+            'QUERY_STRING'         => '',
+            'REMOTE_ADDR'          => '127.0.0.1',
+            'SERVER_NAME'          => 'tests.invalid',
+            'SERVER_PORT'          => 443,
+            'HTTPS'                => 'on',
+            'HTTP_HOST'            => 'tests.invalid',
+            'HTTP_USER_AGENT'      => 'AiTalentsHarness/1.0',
+            'HTTP_ACCEPT'          => 'text/html,application/xhtml+xml',
+            'HTTP_X_REQUESTED_WITH' => '',
+        ];
+    }
+
+    /**
+     * Realistic content for the panel: an empty table hides formatting bugs.
+     */
+    private function panelSeed(): void
+    {
+        $users = $this->app->users();
+        $registrations = $this->app->registrations();
+        $db = $this->app->db();
+
+        $people = [
+            ['name' => 'Panel Pending',  'locale' => 'uz', 'district' => 'asaka',        'directions' => ['ai_ml', 'web'],       'status' => 'pending',  'key' => 'pending'],
+            ['name' => 'Panel Approve',  'locale' => 'uz', 'district' => 'andijon_city', 'directions' => ['programming'],        'status' => 'pending',  'key' => 'approve'],
+            ['name' => 'Panel Reject',   'locale' => 'ru', 'district' => 'xonobod_city', 'directions' => ['design', 'content'],  'status' => 'pending',  'key' => 'reject'],
+            ['name' => 'Panel Note',     'locale' => 'uz', 'district' => 'baliqchi',     'directions' => ['robotics'],           'status' => 'pending',  'key' => 'note'],
+            ['name' => 'Panel Message',  'locale' => 'ru', 'district' => 'marhamat',     'directions' => ['data_science'],       'status' => 'approved', 'key' => 'message'],
+            ['name' => 'Panel Delete',   'locale' => 'uz', 'district' => 'other',        'directions' => ['other'],              'status' => 'rejected', 'key' => 'delete'],
+            ['name' => 'Panel Bulk A',   'locale' => 'uz', 'district' => 'shahrixon',    'directions' => ['mobile'],             'status' => 'pending',  'key' => 'bulk_a'],
+            ['name' => 'Panel Bulk B',   'locale' => 'ru', 'district' => 'qorasuv_city', 'directions' => ['cybersecurity'],      'status' => 'pending',  'key' => 'bulk_b'],
+            ['name' => 'Panel Bulk C',   'locale' => 'uz', 'district' => 'izboskan',     'directions' => ['game_3d'],            'status' => 'pending',  'key' => 'bulk_c'],
+        ];
+
+        $offset = 0;
+
+        foreach ($people as $person) {
+            $offset++;
+            $telegramId = self::PANEL_BASE_ID + $offset;
+
+            $users->touch([
+                'id'            => $telegramId,
+                'is_bot'        => false,
+                'first_name'    => $person['name'],
+                'last_name'     => 'Andijoniy',
+                'username'      => 'panel_user_' . $offset,
+                'language_code' => $person['locale'],
+            ], 'private');
+
+            $id = $registrations->save(0, $telegramId, [
+                'full_name'       => $person['name'],
+                'phone'           => '+99890' . str_pad((string) (1000000 + $offset), 7, '0', STR_PAD_LEFT),
+                'birth_year'      => 1998 + ($offset % 8),
+                'district'        => $person['district'],
+                'directions'      => $person['directions'],
+                'direction_other' => $person['directions'] === ['other'] ? "O'zga yo'nalish" : null,
+                'portfolio'       => "Portfolio " . $offset . "\nhttps://github.com/panel" . $offset,
+                'portfolio_links' => ['https://github.com/panel' . $offset, 'javascript:alert(1)'],
+                'status'          => $person['status'],
+                'admin_note'      => $offset % 3 === 0 ? 'Oldingi izoh' : null,
+            ]);
+
+            $this->panelIds[$person['key']] = $id;
+
+            // Spread the rows over the trend chart's two weeks.
+            $created = date('Y-m-d H:i:s', time() - ($offset * 86400));
+            $db->update('registrations', ['created_at' => $created], ['id' => $id]);
+        }
+
+        // Users without an application: blocked, admin, other locale.
+        foreach ([['blocked', true, false], ['admin', false, true], ['plain', false, false]] as $index => $flavour) {
+            [$label, $blocked, $admin] = $flavour;
+            $telegramId = self::PANEL_BASE_ID + 100 + $index;
+
+            $users->touch([
+                'id'            => $telegramId,
+                'is_bot'        => false,
+                'first_name'    => 'Panel ' . ucfirst($label),
+                'last_name'     => null,
+                'username'      => null,
+                'language_code' => $index === 2 ? 'ru' : 'uz',
+            ], 'private');
+
+            if ($blocked) {
+                $users->setBlocked($telegramId, true);
+            }
+
+            if ($admin) {
+                $users->setAdmin($telegramId, true);
+            }
+
+            $this->panelIds[$label] = $telegramId;
+        }
+
+        // The user the block/unblock and admin-flag actions work on.
+        $this->panelIds['user'] = self::PANEL_BASE_ID + 1;
+
+        // A finished campaign with a target list, so ?p=broadcasts has history.
+        $broadcasts = $this->app->broadcasts();
+        $campaign = $broadcasts->create(
+            self::ADMIN_ID,
+            "Andijon AI Talents — birinchi xabar",
+            ['audience' => 'registered', 'status' => 'approved']
+        );
+        $broadcasts->addTargets($campaign, [self::PANEL_BASE_ID + 1, self::PANEL_BASE_ID + 2, self::PANEL_BASE_ID + 3]);
+        $broadcasts->setStatus($campaign, 'done');
+        $broadcasts->refreshCounters($campaign);
+        $this->panelIds['campaign'] = $campaign;
+
+        // Audit rows, so ?p=audit has something to paginate. Only the ones that
+        // really belong to an application carry it as their target: the detail
+        // screen shows that trail, and an action name such as "export.xlsx"
+        // reads exactly like a leaked language key to the markup scanner.
+        $trail = [
+            ['registration.approve', 'registration:' . ($this->panelIds['pending'] ?? 0)],
+            ['registration.note', 'registration:' . ($this->panelIds['pending'] ?? 0)],
+            ['user.block', 'user:' . (self::PANEL_BASE_ID + 100)],
+            ['settings.save', null],
+            ['export.xlsx', null],
+        ];
+
+        foreach ($trail as $index => $entry) {
+            $this->app->audit()->log(
+                'panel:' . self::PANEL_USER,
+                $entry[0],
+                $entry[1],
+                ['seeded' => true, 'n' => $index],
+                '127.0.0.1'
+            );
+        }
+
+        // A log file, so ?p=logs has a day to tail and a file to download.
+        $this->app->logger()->info('panel harness log line', ['suite' => 'admin panel']);
+        $this->app->logger()->warning('panel harness warning line', ['suite' => 'admin panel']);
+
+        ok('the panel fixtures created applications', count($this->panelIds) >= 9);
+        ok('the fixtures cover every status', $this->app->registrations()->countAll(['status' => 'approved']) > 0);
+        ok('there is a log file to tail', $this->app->logger()->files() !== []);
+        ok('there is an audit trail to paginate', $this->app->audit()->countAll() > 0);
+    }
+
+    /**
+     * Drive one panel request in this very process and capture its output.
+     *
+     * Only ever used for requests that return normally — a request that calls
+     * exit() would end the whole run, which is why the mutating actions go
+     * through panelRun() instead. The $GLOBALS flag makes such a mistake loud:
+     * the shutdown handler names the request that killed the run.
+     *
+     * @param array<string,mixed> $get
+     * @param array<string,mixed> $post
+     * @param ?array<string,mixed> $session
+     *
+     * @return array{html:string,code:int,error:?string}
+     */
+    private function panelRender(array $get, array $post = [], ?array $session = null): array
+    {
+        $this->panelRequests++;
+
+        $_SESSION = $session ?? $this->panelSession;
+        $_GET = $get;
+        $_POST = $post;
+
+        foreach ($this->panelServer() as $key => $value) {
+            $_SERVER[$key] = $value;
+        }
+
+        $_SERVER['REQUEST_METHOD'] = $post === [] ? 'GET' : 'POST';
+        $_SERVER['QUERY_STRING'] = http_build_query($get);
+        $_SERVER['REQUEST_URI'] = '/admin/index.php?' . $_SERVER['QUERY_STRING'];
+
+        http_response_code(200);
+
+        $label = is_string($get['p'] ?? null) ? (string) $get['p'] : '(default)';
+        $GLOBALS['AITALENTS_PANEL_RENDER'] = '?p=' . $label;
+
+        ob_start();
+
+        try {
+            require $this->root . '/admin/index.php';
+        } catch (\Throwable $e) {
+            ob_end_clean();
+            $GLOBALS['AITALENTS_PANEL_RENDER'] = null;
+
+            return [
+                'html'  => '',
+                'code'  => 0,
+                'error' => get_class($e) . ': ' . $e->getMessage()
+                    . ' at ' . $this->relativePath($e->getFile()) . ':' . $e->getLine(),
+            ];
+        }
+
+        $html = (string) ob_get_clean();
+        $GLOBALS['AITALENTS_PANEL_RENDER'] = null;
+
+        return ['html' => $html, 'code' => (int) (http_response_code() ?: 0), 'error' => null];
+    }
+
+    /**
+     * Render one page and run every contract assertion the panel owes.
+     *
+     * @param array<string,mixed> $get
+     * @param string[] $needles fragments the page must contain
+     * @param ?array<string,mixed> $session
+     */
+    private function panelPage(string $label, array $get, array $needles = [], ?array $session = null): string
+    {
+        $mark = count(TestRunner::instance()->diagnostics());
+        $result = $this->panelRender($get, [], $session);
+
+        eq(null, $result['error'], $label . ' renders without throwing');
+
+        if ($result['error'] !== null) {
+            return '';
+        }
+
+        $html = $result['html'];
+
+        eq(200, $result['code'], $label . ' answers 200');
+        ok($label . ' returns a complete HTML document', str_contains($html, '<!doctype html>') && str_contains($html, '</html>'));
+        ok($label . ' has non trivial content (' . strlen($html) . ' bytes)', strlen($html) > 4000);
+
+        foreach ($needles as $needle) {
+            ok($label . ' contains "' . $needle . '"', str_contains($html, $needle));
+        }
+
+        $this->panelMarkup($label, $html);
+        $this->panelLangKeys($label, $html);
+        $this->panelQuiet($mark, $label);
+
+        return $html;
+    }
+
+    /**
+     * The Content-Security-Policy contract every panel page depends on.
+     *
+     * `style-src 'self'; script-src 'self'` means a single inline <script>, a
+     * <style> block, a style= attribute or an on…= handler silently stops
+     * working in the browser — which is exactly the kind of bug a rendered
+     * page can be asked about and a static scan cannot.
+     */
+    private function panelMarkup(string $label, string $html): void
+    {
+        if ($html === '') {
+            return;
+        }
+
+        $violations = [];
+
+        if (preg_match('/<script\b(?![^>]*\bsrc\s*=)[^>]*>/i', $html) === 1) {
+            $violations[] = 'an inline <script> block';
+        }
+
+        if (preg_match('/<style\b/i', $html) === 1) {
+            $violations[] = 'a <style> block';
+        }
+
+        if (preg_match('/<[a-z][a-z0-9]*\b[^>]*\sstyle\s*=/i', $html) === 1) {
+            $violations[] = 'a style= attribute';
+        }
+
+        if (preg_match('/<[a-z][a-z0-9]*\b[^>]*\son[a-z]{2,}\s*=/i', $html) === 1) {
+            $violations[] = 'an on…= handler attribute';
+        }
+
+        if (preg_match('/(?:href|src|action)\s*=\s*["\']\s*javascript:/i', $html) === 1) {
+            $violations[] = 'a javascript: URL';
+        }
+
+        eq([], $violations, $label . ' obeys the panel CSP');
+    }
+
+    /**
+     * Every language key the rendered markup mentions must resolve.
+     *
+     * Lang::t() returns the key itself when it is missing, so a key that made
+     * it into the HTML verbatim is a missing translation. The static scanner
+     * in the "Lang key coverage" suite cannot see keys a template builds at
+     * runtime ('panel.broadcast_audience_' . $audience); this one can, because
+     * it reads the answer rather than the source.
+     */
+    private function panelLangKeys(string $label, string $html): void
+    {
+        static $keys = null;
+        static $pattern = '';
+
+        if ($keys === null) {
+            $keys = Lang::load('uz');
+            $namespaces = [];
+
+            foreach (array_keys($keys) as $key) {
+                $namespaces[explode('.', (string) $key)[0]] = true;
+            }
+
+            $pattern = '/\b(?:' . implode('|', array_map('preg_quote', array_keys($namespaces)))
+                . ')\.[a-z0-9_]+(?:\.[a-z0-9_]+)*/';
+        }
+
+        // ?p=logs prints the bot's own log messages and ?p=audit prints audit
+        // action names; both are shaped exactly like a language key, and both
+        // are data rather than markup the templates produced. The scanner is
+        // about the chrome, so those regions are removed before it looks.
+        if (str_contains($label, '?p=logs') || str_contains($label, '?p=audit')) {
+            $html = (string) preg_replace(
+                ['#<tbody\b.*?</tbody>#is', '#<option\b.*?</option>#is', '#<pre\b.*?</pre>#is'],
+                ' ',
+                $html
+            );
+        }
+
+        if ($html === '' || preg_match_all($pattern, $html, $matches) < 1) {
+            ok($label . ': no untranslated language key leaked into the markup', true);
+
+            return;
+        }
+
+        $leaked = [];
+
+        foreach (array_unique($matches[0]) as $token) {
+            if (!array_key_exists($token, $keys)) {
+                $leaked[] = $token;
+            }
+        }
+
+        eq([], $leaked, $label . ': no untranslated language key leaked into the markup');
+    }
+
+    /**
+     * Assert that nothing was added to the run-wide diagnostics list since $mark.
+     */
+    private function panelQuiet(int $mark, string $label): void
+    {
+        $raised = array_slice(TestRunner::instance()->diagnostics(), $mark);
+
+        eq([], $raised, $label . ' raised no PHP warning, notice or deprecation');
+    }
+
+    /**
+     * The table/index catalogue of the SQLite test database, as a fingerprint.
+     *
+     * @return string[]
+     */
+    private function panelSchema(): array
+    {
+        $rows = $this->app->db()->fetchAll(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        );
+
+        $schema = [];
+
+        foreach ($rows as $row) {
+            $schema[] = (string) ($row['type'] ?? '') . ':' . (string) ($row['name'] ?? '');
+        }
+
+        return $schema;
+    }
+
+    /* ---------------------------------------------------------------------
+     | The child process
+     */
+
+    /**
+     * Run one panel request in its own PHP process and read its report back.
+     *
+     * @param array<string,mixed> $case
+     *
+     * @return array{
+     *     output:string, status:int, session:array<string,mixed>, calls:string[],
+     *     diagnostics:string[], pages:array<int,array<string,mixed>>, stdout:string,
+     *     stderr:string, exit:int, fatal:?string
+     * }
+     */
+    private function panelRun(string $label, array $case): array
+    {
+        $this->panelRequests++;
+        $this->panelCaseNumber++;
+
+        $directory = $this->panelWorkspace();
+        $caseFile = $directory . '/case-' . $this->panelCaseNumber . '.json';
+        $resultFile = $directory . '/result-' . $this->panelCaseNumber . '.json';
+
+        $server = $this->panelServer();
+
+        foreach ((array) ($case['server'] ?? []) as $key => $value) {
+            $server[(string) $key] = $value;
+        }
+
+        $case = array_merge(
+            [
+                'method'  => 'GET',
+                'get'     => [],
+                'post'    => [],
+                'csrf'    => 'valid',
+                'sent'    => false,
+                'queue'   => [],
+                'session' => $this->panelSession,
+            ],
+            $case,
+            [
+                'root'     => $this->root,
+                'config'   => $directory . '/config.php',
+                'sessions' => $this->tmpDir . '/sessions',
+                'result'   => $resultFile,
+                'server'   => $server,
+            ]
+        );
+
+        $empty = [
+            'output' => '', 'status' => 0, 'session' => [], 'calls' => [], 'diagnostics' => [],
+            'pages' => [], 'stdout' => '', 'stderr' => '', 'exit' => -1, 'fatal' => null,
+        ];
+
+        $encoded = json_encode($case, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (!is_string($encoded) || @file_put_contents($caseFile, $encoded) === false) {
+            ok($label . ': the case could be handed to a child process', false);
+
+            return $empty;
+        }
+
+        $pipes = [];
+        $process = @proc_open(
+            [PHP_BINARY, $this->panelWorker(), $caseFile],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            ok($label . ': a child process could be started', false);
+
+            return $empty;
+        }
+
+        $stdout = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $stderr = (string) stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+        $exit = proc_close($process);
+
+        $raw = is_file($resultFile) ? (string) file_get_contents($resultFile) : '';
+        $report = $raw === '' ? null : json_decode($raw, true);
+
+        if (!is_array($report)) {
+            ok(
+                $label . ': the child process reported back (exit ' . $exit . ', '
+                . ($stderr === '' ? 'no stderr' : trim(substr($stderr, 0, 200))) . ')',
+                false
+            );
+
+            return array_merge($empty, ['stdout' => $stdout, 'stderr' => $stderr, 'exit' => $exit]);
+        }
+
+        $result = [
+            'output'      => (string) base64_decode((string) ($report['output'] ?? ''), true),
+            'status'      => (int) ($report['status'] ?? 0),
+            'session'     => is_array($report['session'] ?? null) ? $report['session'] : [],
+            'calls'       => array_map('strval', (array) ($report['calls'] ?? [])),
+            'diagnostics' => array_map('strval', (array) ($report['diagnostics'] ?? [])),
+            'pages'       => [],
+            'stdout'      => $stdout,
+            'stderr'      => $stderr,
+            'exit'        => $exit,
+            'fatal'       => isset($report['fatal']) && is_string($report['fatal']) ? $report['fatal'] : null,
+        ];
+
+        foreach ((array) ($report['pages'] ?? []) as $page) {
+            if (!is_array($page)) {
+                continue;
+            }
+
+            $result['pages'][] = [
+                'label' => (string) ($page['label'] ?? ''),
+                'html'  => (string) base64_decode((string) ($page['html'] ?? ''), true),
+                'code'  => (int) ($page['code'] ?? 0),
+                'error' => isset($page['error']) && is_string($page['error']) ? $page['error'] : null,
+            ];
+        }
+
+        eq(null, $result['fatal'], $label . ': the child process did not die on a fatal error');
+        ok($label . ': the child process never loaded CurlTransport', ($report['curl'] ?? false) === false);
+
+        // A "quiet" case raises a diagnostic on purpose (the collector probe);
+        // everything else feeds the run-wide list that decides the verdict.
+        if (empty($case['quiet'])) {
+            foreach ($result['diagnostics'] as $diagnostic) {
+                TestRunner::instance()->diagnostic($diagnostic . ' [admin panel: ' . $label . ']');
+            }
+
+            eq([], $result['diagnostics'], $label . ' raised no PHP warning, notice or deprecation');
+        }
+
+        return $result;
+    }
+
+    /** Create (once) the directory the child-process plumbing lives in. */
+    private function panelWorkspace(): string
+    {
+        $directory = $this->tmpDir . '/panel';
+
+        if (!is_dir($directory)) {
+            @mkdir($directory, 0775, true);
+        }
+
+        return $directory;
+    }
+
+    /**
+     * Write the child-process worker and the configuration it boots with.
+     *
+     * Both files live under tests/tmp, which the harness wipes at the start of
+     * every run, so nothing is ever left behind in the project.
+     */
+    private function panelWorker(): string
+    {
+        if ($this->panelWorkerFile !== '') {
+            return $this->panelWorkerFile;
+        }
+
+        $directory = $this->panelWorkspace();
+
+        file_put_contents(
+            $directory . '/config.php',
+            "<?php\n\ndeclare(strict_types=1);\n\n// Generated by tests/run.php — the harness configuration, for child processes.\nreturn "
+            . var_export($this->app->config()->all(), true) . ";\n"
+        );
+
+        file_put_contents($directory . '/worker.php', self::panelWorkerSource());
+
+        $this->panelWorkerFile = $directory . '/worker.php';
+
+        return $this->panelWorkerFile;
+    }
+
+    /**
+     * The source of the child-process worker.
+     *
+     * It is generated rather than shipped so that tests/run.php stays the one
+     * file the admin-panel coverage lives in. The worker does four things:
+     * boot the application on the harness configuration, prepare the request
+     * superglobals from the case file, dispatch through admin/index.php, and
+     * write everything it saw into a JSON report from a shutdown function —
+     * the one hook `exit` cannot skip, which is what makes a request that ends
+     * in Request::redirect() or Request::json() observable at all.
+     */
+    private static function panelWorkerSource(): string
+    {
+        return <<<'WORKER'
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Andijon AI Talents — admin panel case runner (generated by tests/run.php).
+ *
+ *     php tests/tmp/panel/worker.php <case.json>
+ *
+ * Never edit this file: it is rewritten from tests/run.php on every run and the
+ * whole tests/tmp directory is wiped before the first suite starts.
+ */
+
+$caseFile = (string) ($_SERVER['argv'][1] ?? '');
+$case = json_decode((string) @file_get_contents($caseFile), true);
+
+if (!is_array($case) || !isset($case['result'], $case['root'], $case['config'])) {
+    fwrite(STDERR, "panel worker: unusable case file\n");
+    exit(2);
+}
+
+$report = [
+    'diagnostics' => [],
+    'output'      => '',
+    'status'      => 0,
+    'session'     => [],
+    'calls'       => [],
+    'pages'       => [],
+    'curl'        => false,
+    'fatal'       => null,
+];
+
+/* The same collector the harness itself installs, so a warning raised on a
+ * panel path is reported no matter which process it happened in. */
+set_error_handler(static function (int $severity, string $message, string $file = '', int $line = 0) use (&$report): bool {
+    if ((error_reporting() & $severity) === 0) {
+        return false;
+    }
+
+    $labels = [
+        E_WARNING => 'Warning',
+        E_NOTICE => 'Notice',
+        E_DEPRECATED => 'Deprecated',
+        E_USER_WARNING => 'User warning',
+        E_USER_NOTICE => 'User notice',
+        E_USER_DEPRECATED => 'User deprecated',
+    ];
+
+    $label = $labels[$severity] ?? ('Error(' . $severity . ')');
+    $where = $file === '' ? '' : ' at ' . basename($file) . ':' . $line;
+    $line = $label . ': ' . $message . $where;
+
+    if (count($report['diagnostics']) < 50 && !in_array($line, $report['diagnostics'], true)) {
+        $report['diagnostics'][] = $line;
+    }
+
+    return true;
+});
+
+/* Written even when the request ended in exit() — which every mutating panel
+ * action does, because Request::redirect() and Request::json() are `never`. */
+register_shutdown_function(static function () use (&$report, $case): void {
+    while (ob_get_level() > 0) {
+        $report['output'] .= (string) ob_get_clean();
+    }
+
+    $report['status'] = (int) (http_response_code() ?: 0);
+    $report['session'] = isset($_SESSION) && is_array($_SESSION) ? $_SESSION : [];
+    $report['curl'] = class_exists('AiTalents\\Telegram\\CurlTransport', false);
+
+    $fake = $GLOBALS['PANEL_FAKE'] ?? null;
+
+    if ($fake instanceof \AiTalents\Telegram\FakeTransport) {
+        foreach ($fake->calls as $call) {
+            $report['calls'][] = (string) ($call['method'] ?? '');
+        }
+    }
+
+    $fatal = error_get_last();
+
+    if ($fatal !== null && in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        $report['fatal'] = $fatal['message'] . ' at ' . basename($fatal['file']) . ':' . $fatal['line'];
+    }
+
+    // The XLSX download is binary, so the body travels base64 encoded.
+    $report['output'] = base64_encode($report['output']);
+
+    @file_put_contents(
+        (string) $case['result'],
+        (string) json_encode($report, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)
+    );
+});
+
+$GLOBALS['AITALENTS_CONFIG'] = require (string) $case['config'];
+
+// The empty-database pass runs against a database of its own.
+if (isset($case['database']) && is_string($case['database']) && $case['database'] !== '') {
+    $GLOBALS['AITALENTS_CONFIG']['database']['path'] = $case['database'];
+}
+
+/** @var \AiTalents\App $app */
+$app = require ((string) $case['root']) . '/bootstrap.php';
+
+/* Nothing leaves the machine: the same guarantee the parent process gives. */
+$fake = new \AiTalents\Telegram\FakeTransport();
+$GLOBALS['PANEL_FAKE'] = $fake;
+
+foreach ((array) ($case['queue'] ?? []) as $response) {
+    $fake->pushRaw((string) $response);
+}
+
+$app->setApi(new \AiTalents\Telegram\Api(
+    token: (string) $app->config('telegram.token', ''),
+    logger: $app->logger(),
+    timeout: (int) $app->config('telegram.timeout', 5),
+    transport: $fake,
+    apiBase: (string) $app->config('telegram.api_base', '')
+));
+
+if (!empty($case['migrate'])) {
+    (new \AiTalents\Migrator($app->db()))->run();
+}
+
+/* A cookie-less session with its files inside tests/tmp; Auth::start() finds it
+ * already active and leaves it alone, which is what makes the panel work here. */
+@ini_set('session.use_cookies', '0');
+@ini_set('session.cache_limiter', '');
+@ini_set('session.save_path', (string) $case['sessions']);
+@session_start();
+
+foreach ((array) ($case['server'] ?? []) as $key => $value) {
+    $_SERVER[(string) $key] = $value;
+}
+
+$_SESSION = (array) ($case['session'] ?? []);
+$_GET = (array) ($case['get'] ?? []);
+$_POST = (array) ($case['post'] ?? []);
+$_SERVER['REQUEST_METHOD'] = (string) ($case['method'] ?? 'GET');
+$_SERVER['QUERY_STRING'] = http_build_query($_GET);
+$_SERVER['REQUEST_URI'] = '/admin/index.php?' . $_SERVER['QUERY_STRING'];
+
+$csrf = (string) ($case['csrf'] ?? 'valid');
+
+if ($csrf === 'valid') {
+    $_POST[\AiTalents\Admin\Csrf::FIELD_NAME] = \AiTalents\Admin\Csrf::token();
+} elseif ($csrf === 'invalid') {
+    $_POST[\AiTalents\Admin\Csrf::FIELD_NAME] = str_repeat('0', 64);
+}
+
+if (!empty($case['probe'])) {
+    // Deliberate "Array to string conversion": the harness checks that a PHP
+    // warning raised inside a child really does travel back in this report.
+    $probeArray = ['x'];
+    $probeText = 'value: ' . $probeArray;
+    unset($probeText);
+}
+
+/* Batch mode: several pages that all return normally, one process. */
+if (isset($case['pages']) && is_array($case['pages'])) {
+    // admin/index.php declares $page, $action, $view and $app in the scope it is
+    // required from, so nothing this loop needs afterwards may use those names.
+    foreach ($case['pages'] as $panelCase) {
+        if (!is_array($panelCase)) {
+            continue;
+        }
+
+        $panelLabel = (string) ($panelCase['label'] ?? '');
+
+        $_GET = (array) ($panelCase['get'] ?? []);
+        $_POST = [];
+        $_SESSION = array_key_exists('session', $panelCase)
+            ? (array) $panelCase['session']
+            : (array) ($case['session'] ?? []);
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $_SERVER['QUERY_STRING'] = http_build_query($_GET);
+        $_SERVER['REQUEST_URI'] = '/admin/index.php?' . $_SERVER['QUERY_STRING'];
+
+        http_response_code(200);
+
+        $panelError = null;
+        $panelHtml = '';
+
+        ob_start();
+
+        try {
+            require ((string) $case['root']) . '/admin/index.php';
+            $panelHtml = (string) ob_get_clean();
+        } catch (\Throwable $panelThrown) {
+            ob_end_clean();
+            $panelError = get_class($panelThrown) . ': ' . $panelThrown->getMessage()
+                . ' at ' . basename($panelThrown->getFile()) . ':' . $panelThrown->getLine();
+        }
+
+        $report['pages'][] = [
+            'label' => $panelLabel,
+            'html'  => base64_encode($panelHtml),
+            'code'  => (int) (http_response_code() ?: 0),
+            'error' => $panelError,
+        ];
+    }
+
+    exit(0);
+}
+
+/*
+ * One byte of real output turns headers_sent() on, which is what makes
+ * Request::redirect() print its target instead of sending a Location header
+ * that the CLI SAPI would silently drop. Cases that want the status code
+ * instead simply leave `sent` unset.
+ */
+if (empty($case['sent'])) {
+    // CLI starts without a status code at all; seed the "nothing went wrong"
+    // answer so a page that never touches http_response_code() reports 200.
+    http_response_code(200);
+} else {
+    echo ' ';
+    flush();
+}
+
+ob_start();
+
+require ((string) $case['root']) . '/admin/index.php';
+
+WORKER;
+    }
+
+    /* =====================================================================
      | PHP 8.1 compatibility scan
      ===================================================================== */
 
@@ -3100,10 +5096,15 @@ $GLOBALS['AITALENTS_CONFIG'] = [
         'rate_limit' => ['enabled' => true, 'max' => 5000, 'per_seconds' => 60],
         'admin_panel' => [
             'enabled'          => true,
-            'username'         => 'admin',
-            'password_hash'    => password_hash('harness-password', PASSWORD_DEFAULT),
+            'username'         => TestSuites::PANEL_USER,
+            // A throw-away fixture hashed at the cheapest bcrypt cost on purpose:
+            // the admin-panel suites verify this password dozens of times (once
+            // per child process), and PASSWORD_DEFAULT would spend a quarter of
+            // a second on every single one of them.
+            'password_hash'    => password_hash(TestSuites::PANEL_PASSWORD, PASSWORD_BCRYPT, ['cost' => 4]),
             'session_lifetime' => 7200,
-            'max_attempts'     => 5,
+            // Generous: the panel suites sign in from every child process.
+            'max_attempts'     => 500,
             'lockout_seconds'  => 900,
         ],
     ],
@@ -3168,6 +5169,19 @@ register_shutdown_function(static function (): void {
     if ($fatal !== null && in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
         fwrite(STDERR, "\n  FATAL  " . $fatal['message'] . ' at ' . $fatal['file'] . ':' . $fatal['line'] . "\n\n");
     }
+
+    // The admin-panel suites render pages in this very process. A panel request
+    // that answers with Request::redirect()/json() calls exit(), which would
+    // take the whole run down silently — so say which request it was.
+    $render = $GLOBALS['AITALENTS_PANEL_RENDER'] ?? null;
+
+    if (is_string($render) && $render !== '') {
+        fwrite(
+            STDERR,
+            "\n  ABORTED  the run ended inside the in-process panel render of " . $render . ".\n"
+            . "           That request calls exit(); drive it through panelRun() instead.\n\n"
+        );
+    }
 });
 
 /* =========================================================================
@@ -3214,7 +5228,21 @@ ok(
     !class_exists('AiTalents\\Telegram\\CurlTransport', false)
 );
 
-/* PHP diagnostics collected along the way. */
+/*
+ * PHP diagnostics collected along the way.
+ *
+ * This is the assertion the whole harness exists for, so it has to be able to
+ * speak for the whole product. It used to certify the bot half only: not one
+ * suite touched admin/, which is how three "Array to string conversion"
+ * warnings shipped on ordinary panel screens while the run stayed green.
+ *
+ * The admin-panel suites now render every page and run every controller action
+ * — in this process for the requests that return, and in a child process for
+ * the ones that end in exit() — and every diagnostic either half raises ends
+ * up in the very same list. The guard below refuses to call the run green if
+ * the panel was not exercised at all, so the coverage cannot quietly vanish
+ * again.
+ */
 suite('PHP diagnostics');
 $diagnostics = TestRunner::instance()->diagnostics();
 
@@ -3225,6 +5253,13 @@ if ($diagnostics === []) {
         ok('no PHP diagnostic: ' . $diagnostic, false);
     }
 }
+
+$panelRequests = $suites->panelRequests();
+
+ok(
+    'the verdict covers the admin panel as well as the bot (' . $panelRequests . ' panel requests)',
+    $panelRequests > 100
+);
 
 restore_error_handler();
 
