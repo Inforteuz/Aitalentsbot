@@ -14,3 +14,7 @@
 logs/*
 !logs/.gitkeep
 !logs/.htaccess
+!exports/
+exports/*
+!exports/.gitkeep
+!exports/.htaccess

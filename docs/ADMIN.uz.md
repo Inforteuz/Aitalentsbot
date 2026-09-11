@@ -44,7 +44,7 @@ Chap tomonda doimiy menyu turadi. Telefonda ekran torayganda menyu **☰** tugma
 | ⚙️ **Sozlamalar** | Ro‘yxatni ochish/yopish va bot sozlamalari |
 | 🧾 **Loglar** | Texnik yozuvlar (mutaxassis uchun) |
 | 🕵️ **Audit** | Panelda kim nima qilgani |
-| 📥 **Eksport** | Arizalarni CSV faylga chiqarish |
+| 📥 **Eksport** | Arizalarni Excel (XLSX) faylga chiqarish |
 
 Har bir amaldan so‘ng ekranning yuqorisida rangli xabar (toast) chiqadi: yashil — bajarildi,
 qizil — xatolik.
@@ -122,11 +122,15 @@ sahifani belgilaydi.
 > keyin yozuvlar butunlay yo‘qoladi. Shubha bo‘lsa, o‘chirish o‘rniga **rad etish** ni tanlang —
 > statistika ham, tarix ham saqlanib qoladi.
 
-### 4.5. CSV eksport
+### 4.5. Excel (XLSX) eksport
 
-**“Joriy filtr bo‘yicha eksport”** tugmasi ekranda ko‘rinib turgan aynan o‘sha ro‘yxatni
-CSV faylga chiqaradi. Masalan: “Asaka tumani + tasdiqlangan + sentabr oyi” — filtrni qo‘ying va
-eksport qiling. Fayl Excel uchun tayyorlangan (`;` ajratkich, UTF-8).
+**“Joriy filtrni Excel (XLSX) ga chiqarish”** tugmasi ekranda ko‘rinib turgan aynan o‘sha
+ro‘yxatni Excel fayliga chiqaradi. Masalan: “Asaka tumani + tasdiqlangan + sentabr oyi” —
+filtrni qo‘ying va eksport qiling.
+
+Fayl Microsoft Excel, LibreOffice Calc va Google Sheets’da hech qanday import sozlamasisiz
+ochiladi. Telefon raqamlari va Telegram ID lar **matn** sifatida saqlanadi, shuning uchun
+Excel ularni songa aylantirib `+` belgisini yo‘qotmaydi.
 
 ---
 
@@ -170,7 +174,7 @@ Botga hech bo‘lmaganda bir marta yozgan barcha odamlar ro‘yxati (ariza to‘
   (`/admin`, `/stats`, `/export`) ochib beradi.
 - 💬 **Chatni ochish** — nomzod bilan Telegramda yozishish.
 
-> ⚠️ Adminlik huquqini faqat mas’ul xodimlarga bering: admin barcha arizalarni ko‘ra oladi va CSV
+> ⚠️ Adminlik huquqini faqat mas’ul xodimlarga bering: admin barcha arizalarni ko‘ra oladi va Excel (XLSX)
 > yuklab olishi mumkin. `config.php` dagi bosh adminlarni bu sahifadan o‘chirib bo‘lmaydi.
 
 ---
@@ -232,7 +236,9 @@ bo‘lib o‘tadi”). Tartib:
   qatorlarini yuboring.
 - **Audit** — panelda **kim, qachon, nima** qilgani: kirish, tasdiqlash, o‘chirish, tarqatish.
   Ariza noto‘g‘ri o‘chirilgan yoki holat o‘zgargan bo‘lsa, javobgarni shu yerdan aniqlaysiz.
-  Yozuvlarni tahrirlab yoki o‘chirib bo‘lmaydi.
+  Yozuvlarni tahrirlab bo‘lmaydi. Ammo sahifa yuqorisidagi **“Eski yozuvlarni tozalash”**
+  tugmasi ko‘rsatilgan kundan eski yozuvlarni butunlay o‘chiradi — bu amal qaytarilmaydi,
+  shuning uchun undan faqat zarurat bo‘lganda foydalaning.
 
 ---
 
@@ -245,6 +251,8 @@ bo‘lib o‘tadi”). Tartib:
 | Ommaviy xabar yuborish | Yuborilgan xabar qaytarilmaydi |
 | Foydalanuvchiga xabar yuborish | Xuddi shunday, qaytarilmaydi |
 | Adminlik berish | Odam barcha shaxsiy ma’lumotlarni ko‘ra boshlaydi |
+| Audit → **Eski yozuvlarni tozalash** | Ko‘rsatilgan kundan eski audit yozuvlari o‘chadi; kim nima qilgani tarixi qaytmaydi |
+| Sozlamalar → **Loglarni tozalash** | Texnik loglar o‘chadi; nosozlikni keyin tekshirish qiyinlashadi |
 
 **Oltin qoida:** o‘chirish o‘rniga **rad etish** ni tanlang. Rad etilgan ariza statistikada qoladi
 va kerak bo‘lsa qayta tasdiqlanadi.
@@ -264,7 +272,7 @@ va kerak bo‘lsa qayta tasdiqlanadi.
 
 ### Har hafta
 
-- [ ] **Eksport** → joriy hafta filtri bilan CSV yuklab oling va rasmiy papkaga saqlang
+- [ ] **Eksport** → joriy hafta filtri bilan Excel (XLSX) yuklab oling va rasmiy papkaga saqlang
 - [ ] Bazadan zaxira nusxa oling (yoki hosting avtomatik zaxirasini tekshiring)
 - [ ] **Boshqaruv paneli** dagi tuman grafigiga qarang: ariza kam kelgan hududlarni belgilang
 - [ ] **Foydalanuvchilar** → bloklanganlar ro‘yxatini ko‘rib chiqing
@@ -272,7 +280,7 @@ va kerak bo‘lsa qayta tasdiqlanadi.
 
 ### Har oyda
 
-- [ ] Yo‘nalishlar bo‘yicha hisobot tayyorlang (dashboard grafiklari + CSV)
+- [ ] Yo‘nalishlar bo‘yicha hisobot tayyorlang (dashboard grafiklari + Excel eksport)
 - [ ] **Audit** sahifasini ko‘rib chiqing: begona amal yo‘qligiga ishonch hosil qiling
 - [ ] Panel parolini yangilash zaruratini baholang
 - [ ] Ro‘yxat muddati tugagan bo‘lsa — **Sozlamalar** dan ro‘yxatni yoping

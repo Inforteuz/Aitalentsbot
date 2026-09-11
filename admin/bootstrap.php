@@ -321,7 +321,10 @@ if (!function_exists('panel_locale')) {
             }
         }
 
-        $requested = strtolower(trim((string) ($_GET['lang'] ?? '')));
+        // ?lang[]=ru would otherwise reach the string cast; this helper runs on
+        // every request, including the ones that answer with JSON.
+        $requestedRaw = $_GET['lang'] ?? '';
+        $requested    = is_string($requestedRaw) ? strtolower(trim($requestedRaw)) : '';
 
         if ($requested !== '' && in_array($requested, $available, true)) {
             $locale = $requested;

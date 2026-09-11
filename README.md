@@ -744,7 +744,7 @@ tail -50 data/logs/bot-$(date +%F).log
 | 8 | `setup_key` (o‘rnatishdan keyin qayta almashtiring) | `config.php` → `security.setup_key` |
 | 9 | Panel logini va parol xeshi | `config.php` → `security.admin_panel.*` |
 | 10 | Majburiy obuna kanali (kerak bo‘lsa) | `config.php` → `app.required_channel` |
-| 11 | Buyruqlar menyusi (`/setcommands`) | @BotFather — [`docs/BOTFATHER.uz.md`](docs/BOTFATHER.uz.md) |
+| 11 | Buyruqlar menyusi (`/setcommands`) | `setup.php` → **«Buyruqlar ro‘yxatini o‘rnatish»** tugmasi (bir marta bosiladi, uz+ru ro‘yxatini o‘zi yozadi), yoki qo‘lda @BotFather orqali — [`docs/BOTFATHER.uz.md`](docs/BOTFATHER.uz.md) |
 | 12 | Bot rasmi, tavsifi va «about» matni | @BotFather |
 | 13 | Cron: `broadcast:run` va `cleanup` | cPanel → Cron Jobs |
 | 14 | `setup.php` faylini **o‘chirish** | File Manager |

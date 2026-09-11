@@ -85,7 +85,7 @@ AddDefaultCharset UTF-8
 #        ochilmaydi. Har bir papkada o'zining .htaccess fayli ham bor — bu
 #        qatlam mod_rewrite ishlaydigan hostinglar uchun qo'shimcha himoya.
 #    EN: Belt-and-braces on top of the per-directory .htaccess files. exports/ is
-#        included because CSV exports contain personal data (names, phones);
+#        included because exports contain personal data (names, phones);
 #        drop it from the list only if you deliberately publish those files.
 # -----------------------------------------------------------------------------
 <IfModule mod_rewrite.c>

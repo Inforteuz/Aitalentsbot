@@ -493,6 +493,7 @@ return [
     'panel.detail_status'                 => "Holatni o‘zgartirish",
     'panel.detail_note'                   => "Admin izohi",
     'panel.detail_note_placeholder'       => "Ichki izoh — foydalanuvchiga ko‘rinmaydi",
+    'panel.detail_message_empty'          => "Xabar matnini kiriting.",
     'panel.detail_save_status'            => "Holatni saqlash",
     'panel.detail_message_title'          => "Foydalanuvchiga xabar yuborish",
     'panel.detail_message_placeholder'    => "Xabar matni…",
@@ -579,6 +580,7 @@ return [
     'panel.set_webhook_reset'             => "Webhookni qayta o‘rnatish",
     'panel.set_webhook_ok'                => "Webhook o‘rnatildi.",
     'panel.set_webhook_failed'            => "Webhookni o‘rnatib bo‘lmadi: :error",
+    'panel.set_webhook_invalid_url'       => "URL noto‘g‘ri — `https://` bilan boshlanadigan to‘liq manzilni kiriting.",
     'panel.set_getme'                     => "Bot bilan aloqa",
     'panel.set_getme_ok'                  => "Bot ishlayapti: @:username",
     'panel.set_getme_failed'              => "Botga ulanib bo‘lmadi: :error",
@@ -601,6 +603,8 @@ return [
     'panel.audit_subtitle'                => "Panel va botdagi barcha muhim amallar",
     'panel.audit_filter_actor'            => "Kim",
     'panel.audit_filter_action'           => "Amal",
+    'panel.audit_filter_target'           => "Obyekt",
+    'panel.audit_filter_ip'               => "IP manzil",
     'panel.audit_empty'                   => "Yozuvlar yo‘q.",
     'panel.audit_purge'                   => "Eski yozuvlarni tozalash",
     'panel.audit_purged'                  => ":count ta yozuv o‘chirildi.",
@@ -633,7 +637,7 @@ return [
     'panel.copied'                        => "Nusxalandi",
     'panel.not_available'                 => "Mavjud emas",
 
-    /* CSV export column headers */
+    /* Excel (XLSX) export column headers */
     'export.id'                              => "ID",
     'export.telegram_id'                     => "Telegram ID",
     'export.username'                        => "Username",

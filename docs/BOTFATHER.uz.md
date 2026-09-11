@@ -138,6 +138,11 @@ Andijon AI Talents — iqtidorli yoshlar uchun rasmiy ro‘yxatdan o‘tish boti
 
 ## 5. ⌨️ `/setcommands` — buyruqlar menyusi
 
+> 💡 **Tezroq yo‘l:** bu bo‘limni qo‘lda bajarish shart emas. `setup.php?key=...` sahifasidagi
+> **«Buyruqlar ro‘yxatini o‘rnatish»** tugmasi o‘zbekcha va ruscha ro‘yxatni bir bosishda
+> botga yozib qo‘yadi (`setMyCommands`). Quyidagi qo‘lda sozlash esa BotFather’ni afzal
+> ko‘rsangiz yoki matnlarni o‘zgartirmoqchi bo‘lsangiz kerak bo‘ladi.
+
 Bu sozlama chat oynasidagi **☰ Menu** tugmasini to‘ldiradi. `/setcommands` → botni tanlang →
 quyidagi bloklardan birini **to‘liq nusxalab** yuboring.
 
@@ -182,9 +187,9 @@ menyuda ko‘rinmasligi kerak (aks holda har bir foydalanuvchi ularni bosib ko�
 
 | Buyruq | Vazifasi |
 |--------|----------|
-| `/admin` | Admin menyusi (statistika, qidiruv, CSV, xabar yuborish, ro‘yxatni ochish/yopish) |
+| `/admin` | Admin menyusi (statistika, qidiruv, Excel eksport, xabar yuborish, ro‘yxatni ochish/yopish) |
 | `/stats` | Qisqa statistika |
-| `/export` | Arizalarni CSV fayl ko‘rinishida olish |
+| `/export` | Arizalarni Excel (XLSX) fayl ko‘rinishida olish |
 | `/broadcast` | Ommaviy xabar yuborishni boshlash |
 | `/panel` | Web admin panel havolasi |
 
@@ -255,7 +260,7 @@ so‘ng tekshiruvdan keyin `php cli.php webhook:set` qiling.
 ## 8. 🆔 Telegram user id ni qanday bilish (`admin_ids`)
 
 `telegram.admin_ids` — bu **shaxsiy** Telegram ID raqamlari ro‘yxati (username emas!). Bot
-statistikasi, CSV eksporti va tasdiqlash tugmalari faqat shu ro‘yxatdagilarga ochiladi.
+statistikasi, Excel eksporti va tasdiqlash tugmalari faqat shu ro‘yxatdagilarga ochiladi.
 
 **1-usul — @userinfobot.** Telegram’da `@userinfobot` ni oching, `Start` bosing. U darhol
 `Id: 123456789` deb javob beradi. Boshqa odamning ID sini bilish uchun uning istalgan xabarini

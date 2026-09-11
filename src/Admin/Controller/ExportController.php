@@ -41,8 +41,42 @@ final class ExportController
      */
     public function handle(string $action): void
     {
-        // Every action of this page means the same thing: send the workbook.
-        $this->download();
+        // Clicking "Eksport" in the sidebar should not fire a download at an
+        // operator who only wanted to look; the landing page shows what the
+        // current filter selects and asks for a deliberate click. The button on
+        // the registrations list links straight to ?a=download.
+        if ($action === 'download') {
+            $this->download();
+
+            return;
+        }
+
+        $this->overview();
+    }
+
+    /**
+     * The landing page: what the current filter selects, and a download button.
+     */
+    private function overview(): void
+    {
+        $filters = $this->filters();
+        $total   = 0;
+
+        try {
+            $total = $this->app->registrations()->countAll($filters);
+        } catch (\Throwable $e) {
+            $this->app->logger()->error('export_count_failed', ['error' => $e->getMessage()]);
+        }
+
+        $query = $filters;
+        $query['p'] = 'export';
+        $query['a'] = 'download';
+
+        $this->view->render('export', [
+            'filters'     => $filters,
+            'total'       => $total,
+            'downloadUrl' => View::link($query),
+        ]);
     }
 
     /**

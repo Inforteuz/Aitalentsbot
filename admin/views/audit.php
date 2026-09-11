@@ -149,6 +149,18 @@ $adMeta = static function (mixed $meta) use ($adScalar): array {
                     'options' => $adActionOptions,
                 ],
                 [
+                    'type'        => 'text',
+                    'name'        => 'target',
+                    'label'       => t('panel.audit_filter_target'),
+                    'placeholder' => 'registration:12',
+                ],
+                [
+                    'type'        => 'text',
+                    'name'        => 'ip',
+                    'label'       => t('panel.audit_filter_ip'),
+                    'placeholder' => '127.0.0.1',
+                ],
+                [
                     'type'  => 'date',
                     'name'  => 'date_from',
                     'label' => t('panel.filter_date_from'),

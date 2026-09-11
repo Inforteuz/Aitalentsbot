@@ -133,7 +133,7 @@ foreach ($rgPerPageOptions as $rgOption) {
  */
 
 // "Export current filter": the export controller reads exactly these keys.
-$rgExportQuery = ['p' => 'export'];
+$rgExportQuery = ['p' => 'export', 'a' => 'download'];
 
 foreach (['q', 'status', 'district', 'direction', 'date_from', 'date_to'] as $rgKey) {
     $rgValue = $rgFilters[$rgKey] ?? null;

@@ -408,7 +408,7 @@ final class RegistrationController
         $text = Text::multiline(is_string($raw) ? $raw : '', self::MESSAGE_MAX);
 
         if ($text === '') {
-            $this->flash('error', $this->t('error.empty'));
+            $this->flash('error', $this->t('panel.detail_message_empty'));
             $this->back();
         }
 

@@ -311,7 +311,7 @@ final class Api
     }
 
     /**
-     * Upload a local file as a document (used by the CSV export).
+     * Upload a local file as a document (used by the XLSX export).
      *
      * @param array<string,mixed> $extra
      *

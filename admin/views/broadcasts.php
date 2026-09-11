@@ -92,11 +92,17 @@ $bsAudience = static function (array $filters) use ($bsLocale): array {
         $chips[] = t('panel.broadcast_audience_' . $audience);
     }
 
-    $status = (string) ($filters['status'] ?? '');
-    $case = RegistrationStatus::tryOrNull($status);
+    // BroadcastService normalises `status` to a list (an audience may target
+    // several statuses at once), but an older row may still hold a bare string.
+    $statusRaw  = $filters['status'] ?? '';
+    $statusList = is_array($statusRaw) ? $statusRaw : ($statusRaw === '' ? [] : [$statusRaw]);
 
-    if ($case !== null) {
-        $chips[] = Lang::t($case->labelKey(), $bsLocale);
+    foreach ($statusList as $statusValue) {
+        $case = is_scalar($statusValue) ? RegistrationStatus::tryOrNull((string) $statusValue) : null;
+
+        if ($case !== null) {
+            $chips[] = Lang::t($case->labelKey(), $bsLocale);
+        }
     }
 
     $district = (string) ($filters['district'] ?? '');

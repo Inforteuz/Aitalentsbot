@@ -305,7 +305,7 @@ final class RegistrationRepository
      * Walk every matching row without loading the whole table into memory.
      *
      * Rows are read in blocks of $chunk with LIMIT/OFFSET and yielded one by
-     * one (already decoded), so a 50k row CSV export stays flat in memory.
+     * one (already decoded), so a 50k row XLSX export stays flat in memory.
      *
      * @param array<string,mixed> $filters
      * @return \Generator<int,array<string,mixed>>

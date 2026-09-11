@@ -183,19 +183,11 @@ if (!function_exists('aitalents_webhook_log')) {
 $requestMethod = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 if ($requestMethod === 'GET' || $requestMethod === 'HEAD') {
-    $botName = trim((string) $app->config('app.name', 'Andijon AI Talents'));
-
-    if ($botName === '') {
-        $botName = 'Andijon AI Talents';
-    }
-
-    $botUsername = ltrim(trim((string) $app->config('telegram.bot_username', '')), '@');
-
-    $statusLine = $botName
-        . ($botUsername !== '' ? ' (@' . $botUsername . ')' : '')
-        . ' — webhook is active';
-
-    aitalents_webhook_respond(200, $statusLine . "\n");
+    // A bare acknowledgement. Naming the bot here would tell any passer-by
+    // which bot lives behind this URL and that they found its webhook; the
+    // health checks that actually need the name live in setup.php, behind the
+    // setup key, and in `php cli.php webhook:info`.
+    aitalents_webhook_respond(200, "OK\n");
     exit;
 }
 

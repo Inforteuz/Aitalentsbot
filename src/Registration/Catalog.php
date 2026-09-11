@@ -228,7 +228,7 @@ final class Catalog
     }
 
     /**
-     * Labels for a list of direction keys (used by the summary card and the CSV export).
+     * Labels for a list of direction keys (used by the summary card and the XLSX export).
      *
      * @param string[] $keys
      *

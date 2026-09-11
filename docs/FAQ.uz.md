@@ -283,7 +283,10 @@ paneli bajaradi.
 ### 22. “Login yoki parol noto‘g‘ri” — hammasi to‘g‘ri yozilgan bo‘lsa ham
 
 - `password_hash` **to‘liq** ko‘chirilganmi? Satr uzun, oxiri kesilib qolmasin.
-- Xesh qo‘shtirnoq ichida, ortiqcha bo‘sh joysiz bo‘lsin.
+- Xesh **bitta tirnoq** ichida bo‘lsin: `'password_hash'  => '$2y$12$...'`, ortiqcha bo‘sh
+  joysiz. Qo‘shtirnoq ichida yozmang — PHP `$2y`, `$12` kabi bo‘laklarni o‘zgaruvchi deb
+  o‘qiydi va xeshning boshini jimgina yeb qo‘yadi, natijada to‘g‘ri parol ham qabul
+  qilinmaydi.
 - Parolda `$` belgisi bo‘lsa, `admin:hash` buyrug‘ida parolni **bitta qo‘shtirnoq** ichida yozing.
 - `security.admin_panel.enabled` qiymati `true` ekanini tekshiring.
 - Xabar ataylab umumiy: qaysi maydon xato ekanini ko‘rsatmaydi (xavfsizlik talabi).
@@ -316,23 +319,26 @@ va serverda sessiya papkasi yozuvga ochiqligini tekshiring.
 
 ## 🗄 Ma’lumotlar
 
-### 26. CSV faylni Excel’da ochsam “krakozyabra” chiqyapti
+### 26. Eksport fayli ochilmayapti yoki g‘alati ko‘rinyapti
 
-Fayl UTF-8 BOM bilan va `;` ajratkichi bilan yaratiladi — zamonaviy Excel uni to‘g‘ri ochadi.
-Baribir buzilsa:
+Eksport **CSV emas, XLSX (Excel 2007+)** formatida. `.xlsx` ichida matn doim UTF-8 saqlanadi,
+shuning uchun kodlash muammosi bo‘lmasligi kerak — fayl Excel, LibreOffice Calc va Google
+Sheets’da hech qanday import sozlamasisiz ochiladi.
 
-1. Excel’ni bo‘sh hujjat bilan oching → **Данные / Data → Из текста/CSV (From Text/CSV)**.
-2. Faylni tanlang, **File Origin: 65001: Unicode (UTF-8)**, **Delimiter: Semicolon (;)**.
-3. **Load / Загрузить**.
+| Belgisi | Sabab | Yechim |
+|---|---|---|
+| Excel “format mos emas” yoki “faylni tiklaymizmi?” deydi | Yuklab olish yarim uzilgan (proxy, antivirus, sekin internet) | Faylni qayta yuklab oling va hajmini tekshiring |
+| Harflar o‘rniga `Ð, Ñ, â€™` | Faylni CSV sifatida qayta saqlagansiz | XLSX faylning o‘zini oching |
+| Telefon raqami `9,98901E+11` ko‘rinishida | Raqam **son** sifatida o‘qilgan | Bunday bo‘lmasligi kerak: eksporter telefon va Telegram ID ni **matn** sifatida yozadi. CSV’ga o‘tkazgan bo‘lsangiz, import paytida ustunni **Text** deb belgilang |
+| Serverda `zip` kengaytmasi yo‘q | Sof-PHP ZIP yo‘li ishlagan | Normal holat — fayl baribir yaroqli |
 
-LibreOffice Calc’da esa fayl ochilganda **Character set: Unicode (UTF-8)**, **Separated by:
-Semicolon** ni belgilang. Telefon raqami `+998...` ustunini **Text** formatida import qiling —
-aks holda Excel uni songa aylantirib, `+` va bosh nolni yo‘qotadi.
+Fayl haqiqatan buzuqmi degan shubha bo‘lsa, uni oddiy arxiv dasturi bilan ochib ko‘ring:
+`.xlsx` — bu ZIP arxiv, ichida `xl/worksheets/sheet1.xml` bo‘lishi kerak.
 
 ### 27. SQLite’dan MySQL’ga qanday o‘taman?
 
-1. **Zaxira oling:** `data/aitalents.sqlite` faylini va CSV eksportni saqlab qo‘ying
-   (`php cli.php export data/backup.csv`).
+1. **Zaxira oling:** `data/aitalents.sqlite` faylini va XLSX eksportni saqlab qo‘ying
+   (`php cli.php export data/backup.xlsx`).
 2. cPanel’da yangi MySQL bazasi va foydalanuvchi yarating, `ALL PRIVILEGES` bering.
 3. `config.php` da `database.driver` ni `mysql` ga o‘zgartirib, `host/database/username/password`
    ni to‘ldiring.
@@ -347,12 +353,12 @@ aks holda Excel uni songa aylantirib, `+` va bosh nolni yo‘qotadi.
 
 | Nima | Qanday |
 |------|--------|
-| Arizalar (tez, kundalik) | Panel → **Eksport** yoki `php cli.php export data/backup-2026-01-31.csv` |
+| Arizalar (tez, kundalik) | Panel → **Eksport** yoki `php cli.php export data/backup-2026-01-31.xlsx` |
 | To‘liq baza (SQLite) | `data/aitalents.sqlite` faylini yuklab olish |
 | To‘liq baza (MySQL) | cPanel → **phpMyAdmin → Export → SQL**, yoki **Backup Wizard** |
 | Sozlamalar | `config.php` faylining nusxasi (xavfsiz joyda saqlang — ichida token bor!) |
 
-Tavsiya: haftada bir marta CSV, oyda bir marta to‘liq baza dump’i. Zaxirani serverning o‘zida
+Tavsiya: haftada bir marta XLSX eksport, oyda bir marta to‘liq baza dump’i. Zaxirani serverning o‘zida
 emas, alohida joyda saqlang.
 
 ### 29. Arizani xato o‘chirib yubordim, tiklash mumkinmi?

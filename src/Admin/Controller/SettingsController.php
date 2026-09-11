@@ -118,7 +118,10 @@ final class SettingsController
             return; // unreachable: back() always redirects
         }
 
-        $welcome = Text::clean((string) Request::post('welcome_extra', ''), self::WELCOME_MAX);
+        // Request::post() hands back whatever was submitted: an array would be
+        // cast to the literal string "Array" and stored as the welcome text.
+        $welcomeRaw = Request::post('welcome_extra', '');
+        $welcome    = Text::clean(is_string($welcomeRaw) ? $welcomeRaw : '', self::WELCOME_MAX);
 
         $repository->set('registration_open', $registrationOpen);
         $repository->set('ask_language', $askLanguage);
@@ -153,7 +156,7 @@ final class SettingsController
         }
 
         if (!$this->isWebhookUrl($url)) {
-            $this->flash('error', $this->t('panel.set_webhook_failed', ['error' => $this->t('error.invalid_choice')]));
+            $this->flash('error', $this->t('panel.set_webhook_invalid_url'));
             $this->back();
 
             return; // unreachable: back() always redirects

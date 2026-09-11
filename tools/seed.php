@@ -942,7 +942,7 @@ final class AiTalentsSeeder
         $extra = [
             ['settings.update', null, ['seed' => true, 'field' => 'registration_open', 'value' => true]],
             ['settings.update', null, ['seed' => true, 'field' => 'required_channel', 'value' => '@aitalents_andijon']],
-            ['export.csv', 'registrations', ['seed' => true, 'rows' => count($applicants)]],
+            ['export.xlsx', 'registrations', ['seed' => true, 'rows' => count($applicants)]],
             ['broadcast.create', 'broadcast:demo', ['seed' => true, 'audience' => 'approved']],
             ['user.block', 'user:' . (self::TG_FIRST + 3), ['seed' => true, 'reason' => 'spam']],
             ['logs.clear', null, ['seed' => true, 'files' => 3]],

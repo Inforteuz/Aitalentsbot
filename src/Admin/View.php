@@ -224,7 +224,8 @@ final class View
             return $this->page;
         }
 
-        $page = self::normalizePage((string) ($_GET['p'] ?? ''));
+        $pageRaw = $_GET['p'] ?? '';
+        $page    = self::normalizePage(is_string($pageRaw) ? $pageRaw : '');
 
         return $page === '' ? self::DEFAULT_PAGE : $page;
     }
