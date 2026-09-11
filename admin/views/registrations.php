@@ -62,7 +62,7 @@ $rgFiltered = $rgFilters !== [];
  | Lookup tables built once, then reused by every row
  */
 
-/** status value => ['value','label','badge','emoji'] */
+/** status value => ['value','label','badge','icon'] */
 $rgStatusMap = [];
 
 /** The same list, shaped for the filter bar's <select>. */
@@ -80,9 +80,10 @@ foreach ($rgStatuses as $rgStatus) {
     }
 
     $rgStatusMap[$rgValue] = $rgStatus;
+    // An <option> can carry text only, so the badge icon has no place here.
     $rgStatusOptions[] = [
         'value' => $rgValue,
-        'label' => trim((string) ($rgStatus['emoji'] ?? '') . ' ' . (string) ($rgStatus['label'] ?? $rgValue)),
+        'label' => trim((string) ($rgStatus['label'] ?? $rgValue)),
     ];
 }
 
@@ -101,7 +102,7 @@ foreach ($rgDistrictList as $rgDistrict) {
     }
 }
 
-/** Directions, each prefixed with its emoji so the list stays scannable. */
+/** Directions, by their plain catalogue name (an <option> holds text only). */
 $rgDirectionOptions = [];
 
 foreach ($rgDirectionList as $rgDirection) {
@@ -114,7 +115,7 @@ foreach ($rgDirectionList as $rgDirection) {
     if ($rgKey !== '') {
         $rgDirectionOptions[] = [
             'value' => $rgKey,
-            'label' => trim((string) ($rgDirection['emoji'] ?? '') . ' ' . (string) ($rgDirection['label'] ?? $rgKey)),
+            'label' => trim((string) ($rgDirection['label'] ?? $rgKey)),
         ];
     }
 }
@@ -344,6 +345,7 @@ $rgRowIds = [];
                             $rgDistrictKey = trim((string) ($rgRow['district'] ?? ''));
                             $rgStatusKey = trim((string) ($rgRow['status'] ?? ''));
                             $rgBadge = $rgStatusMap[$rgStatusKey] ?? null;
+                            $rgBadgeIcon = (string) ($rgBadge['icon'] ?? 'dot');
                             $rgCreated = substr((string) ($rgRow['created_at'] ?? ''), 0, 16);
                             $rgDetailUrl = url(['p' => 'registration', 'id' => $rgId]);
 
@@ -414,7 +416,7 @@ $rgRowIds = [];
                                 <td>
                                     <?php if ($rgBadge !== null) { ?>
                                         <span class="badge badge--<?= e((string) ($rgBadge['badge'] ?? 'warn')) ?>">
-                                            <?= e((string) ($rgBadge['emoji'] ?? '')) ?>
+                                            <?php $view->partial('icon', ['icon' => $rgBadgeIcon]); ?>
                                             <?= e((string) ($rgBadge['label'] ?? $rgStatusKey)) ?>
                                         </span>
                                     <?php } else { ?>
@@ -512,7 +514,7 @@ unset(
     $rgFiltered, $rgStatusMap, $rgStatusOptions, $rgStatus, $rgValue, $rgDistrictOptions,
     $rgDistrict, $rgDirectionOptions, $rgDirection, $rgPerPageChoices, $rgOption, $rgExportQuery,
     $rgKey, $rgAction, $rgSortLink, $rgHeader, $rgIcon, $rgRowIds, $rgRowId, $rgRow, $rgId,
-    $rgName, $rgUsername, $rgPhone, $rgDistrictKey, $rgStatusKey, $rgBadge, $rgCreated,
+    $rgName, $rgUsername, $rgPhone, $rgDistrictKey, $rgStatusKey, $rgBadge, $rgBadgeIcon, $rgCreated,
     $rgDetailUrl, $rgNames, $rgItem, $rgOther
 );
 ?>

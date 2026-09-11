@@ -288,6 +288,7 @@ $dbTopDay = isset($topDay) && is_array($topDay) ? $topDay : null;
                         $dbDistrict = trim((string) ($dbRow['district'] ?? ''));
                         $dbStatusKey = (string) ($dbRow['status'] ?? '');
                         $dbBadge = $dbStatuses[$dbStatusKey] ?? null;
+                        $dbBadgeIcon = (string) ($dbBadge['icon'] ?? 'dot');
 
                         $dbDirectionKeys = is_array($dbRow['directions'] ?? null) ? $dbRow['directions'] : [];
                         $dbDirectionNames = [];
@@ -315,7 +316,7 @@ $dbTopDay = isset($topDay) && is_array($topDay) ? $topDay : null;
                             <td>
                                 <?php if ($dbBadge !== null) { ?>
                                     <span class="badge badge--<?= e((string) ($dbBadge['badge'] ?? 'warn')) ?>">
-                                        <?= e((string) ($dbBadge['emoji'] ?? '')) ?>
+                                        <?php $view->partial('icon', ['icon' => $dbBadgeIcon]); ?>
                                         <?= e((string) ($dbBadge['label'] ?? $dbStatusKey)) ?>
                                     </span>
                                 <?php } else { ?>
@@ -341,6 +342,6 @@ unset(
     $dbOverview, $dbLatest, $dbStatuses, $dbNumber, $dbStat, $dbLabel, $dbSeries,
     $dbDaily, $dbHourly, $dbDirections, $dbDistricts, $dbStatusSeries, $dbCards, $dbCard,
     $dbDay, $dbHour, $dbDate, $dbStamp, $dbRow, $dbId, $dbPhone, $dbDistrict,
-    $dbStatusKey, $dbBadge, $dbDirectionKeys, $dbDirectionNames, $dbKey, $dbCreated
+    $dbStatusKey, $dbBadge, $dbBadgeIcon, $dbDirectionKeys, $dbDirectionNames, $dbKey, $dbCreated
 );
 ?>

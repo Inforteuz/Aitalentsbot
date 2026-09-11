@@ -331,10 +331,9 @@ $bcUrls = [
                                         continue;
                                     }
 
-                                    $bcDirectionLabel = trim(
-                                        (string) ($bcDirection['emoji'] ?? '')
-                                        . ' ' . (string) ($bcDirection['label'] ?? $bcDirectionKey)
-                                    );
+                                    // The plain catalogue name: an <option> holds
+                                    // text only, and the panel prints no emoji.
+                                    $bcDirectionLabel = trim((string) ($bcDirection['label'] ?? $bcDirectionKey));
                                     ?>
                                     <option value="<?= e($bcDirectionKey) ?>"
                                         <?= $bcDirectionKey === $bcDirectionValue ? 'selected' : '' ?>>

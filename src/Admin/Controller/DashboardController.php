@@ -121,7 +121,7 @@ final class DashboardController
     /**
      * The status catalogue used by the badges of the "latest" table.
      *
-     * @return array<string,array{value:string,label:string,badge:string,emoji:string}>
+     * @return array<string,array{value:string,label:string,badge:string,icon:string}>
      */
     private function statuses(): array
     {
@@ -133,7 +133,13 @@ final class DashboardController
                 'value' => $status->value,
                 'label' => Lang::t($status->labelKey(), $locale),
                 'badge' => $status->badge(),
-                'emoji' => $status->emoji(),
+                // An inline SVG name (partials/icon.php), not the enum's emoji:
+                // emoji are for the Telegram messages, never for the panel.
+                'icon'  => match ($status) {
+                    RegistrationStatus::Pending  => 'clock',
+                    RegistrationStatus::Approved => 'check',
+                    RegistrationStatus::Rejected => 'x',
+                },
             ];
         }
 

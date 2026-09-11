@@ -1082,6 +1082,16 @@ td .page-link:hover {
 .badge--info    { color: var(--c-info);   background: var(--c-info-soft);   border-color: var(--c-info-line); }
 .badge--muted   { color: var(--c-text-3); background: var(--c-surface-2); }
 
+/* The status glyph (partials/icon.php) — never an emoji, which every operating
+   system draws differently. It inherits the badge colour through currentColor
+   and must not be squeezed by a long caption next to it. */
+.badge svg {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    stroke: currentColor;
+}
+
 /* A badge in a card head can carry a whole sentence (Settings prints the bot
    connection error there), so it wraps instead of running off the card. */
 .card__head .badge,

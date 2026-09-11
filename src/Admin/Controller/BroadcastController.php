@@ -582,7 +582,7 @@ final class BroadcastController
     }
 
     /**
-     * @return array<int,array{key:string,label:string,emoji:string}>
+     * @return array<int,array{key:string,label:string}>
      */
     private function directionOptions(): array
     {
@@ -590,10 +590,11 @@ final class BroadcastController
         $options = [];
 
         foreach (Catalog::directionKeys() as $key) {
+            // Without the catalogue emoji: a <select> can hold text only, and
+            // the panel does not print emoji (see admin/views/partials/icon.php).
             $options[] = [
                 'key'   => $key,
                 'label' => Catalog::directionLabel($key, $locale, false),
-                'emoji' => Catalog::directionEmoji($key),
             ];
         }
 

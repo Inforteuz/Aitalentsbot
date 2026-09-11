@@ -166,7 +166,7 @@ $rvDeepLink = $rvTelegramId !== 0 ? 'tg://user?id=' . $rvTelegramId : '';
     </a>
     <?php if ($rvStatus !== []) { ?>
         <span class="badge badge--<?= e((string) ($rvStatus['badge'] ?? 'warn')) ?>">
-            <?= e((string) ($rvStatus['emoji'] ?? '')) ?>
+            <?php $view->partial('icon', ['icon' => (string) ($rvStatus['icon'] ?? 'dot')]); ?>
             <?= e((string) ($rvStatus['label'] ?? $rvStatusKey)) ?>
         </span>
     <?php } ?>
@@ -361,7 +361,7 @@ $rvDeepLink = $rvTelegramId !== 0 ? 'tg://user?id=' . $rvTelegramId : '';
                     </div>
                     <div class="meta__row">
                         <dt><?= e(t('panel.th_locale')) ?></dt>
-                        <dd><?= e((string) (Lang::available()[$rvUserLocale] ?? strtoupper($rvUserLocale))) ?></dd>
+                        <dd><?= e(Lang::name($rvUserLocale)) ?></dd>
                     </div>
                     <div class="meta__row">
                         <dt><?= e(t('panel.th_blocked')) ?></dt>
@@ -411,8 +411,7 @@ $rvDeepLink = $rvTelegramId !== 0 ? 'tg://user?id=' . $rvTelegramId : '';
                                 ?>
                                 <option value="<?= e($rvOptionValue) ?>"
                                     <?= $rvOptionValue === $rvStatusKey ? 'selected' : '' ?>>
-                                    <?= e(trim((string) ($rvOption['emoji'] ?? '') . ' '
-                                        . (string) ($rvOption['label'] ?? $rvOptionValue))) ?>
+                                    <?= e(trim((string) ($rvOption['label'] ?? $rvOptionValue))) ?>
                                 </option>
                             <?php } ?>
                         </select>

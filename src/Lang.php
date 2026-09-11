@@ -47,6 +47,41 @@ final class Lang
     }
 
     /**
+     * The language's own name WITHOUT the flag: "O‘zbekcha", "Русский".
+     *
+     * {@see self::available()} keeps the flag because Telegram renders the
+     * regional-indicator pairs correctly in every one of its clients, and the
+     * bot's language picker reads better with them. A browser does not: on
+     * Windows no font carries the flag glyphs, so the picker would degrade to
+     * a bare "UZ" / "RU" next to the name. The admin panel therefore prints
+     * the plain name and draws its own icons as inline SVG.
+     *
+     * An unknown or empty code is returned upper-cased ("EN"), which is what
+     * the panel used to print through `Lang::available()[$code] ?? …`.
+     */
+    public static function name(string $locale): string
+    {
+        $code = strtolower(trim($locale));
+        $label = self::AVAILABLE[$code] ?? '';
+
+        if ($label === '') {
+            return strtoupper($code);
+        }
+
+        // Regional indicators (the flags), variation selectors, the zero width
+        // joiner and the pictographic blocks — everything a browser may fail to
+        // draw. Whatever is left is collapsed to single spaces and trimmed.
+        $plain = preg_replace(
+            '/[\x{1F1E6}-\x{1F1FF}\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{FE0E}\x{FE0F}\x{200D}]/u',
+            '',
+            $label
+        );
+        $plain = trim((string) preg_replace('/[\s\x{00A0}]+/u', ' ', (string) $plain));
+
+        return $plain === '' ? strtoupper($code) : $plain;
+    }
+
+    /**
      * Reduce any locale-ish string to a supported locale code.
      *
      * "ru", "ru-RU", "RU_ru" => "ru"; anything unsupported => "uz".

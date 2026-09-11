@@ -417,13 +417,14 @@ final class SettingsController
      */
     private function localeOptions(): array
     {
-        $available = Lang::available();
         $options = [];
 
         foreach ($this->app->locales() as $locale) {
+            // Lang::name(), not Lang::available(): the panel shows the plain
+            // language name, the flag emoji stays in the bot's own picker.
             $options[] = [
                 'value' => $locale,
-                'label' => (string) ($available[$locale] ?? strtoupper($locale)),
+                'label' => Lang::name($locale),
             ];
         }
 

@@ -656,7 +656,7 @@ final class RegistrationController
                 continue;
             }
 
-            $labels[] = Catalog::directionLabel((string) $key, $locale);
+            $labels[] = Catalog::directionLabel((string) $key, $locale, false);
         }
 
         $other = trim((string) ($registration['direction_other'] ?? ''));
@@ -734,7 +734,7 @@ final class RegistrationController
     /**
      * The direction catalogue as select options.
      *
-     * @return array<int,array{key:string,label:string,emoji:string}>
+     * @return array<int,array{key:string,label:string}>
      */
     private function directionOptions(): array
     {
@@ -742,10 +742,11 @@ final class RegistrationController
         $options = [];
 
         foreach (Catalog::directionKeys() as $key) {
+            // Without the catalogue emoji: a <select> can hold text only, and
+            // the panel does not print emoji (see admin/views/partials/icon.php).
             $options[] = [
                 'key'   => $key,
                 'label' => Catalog::directionLabel($key, $locale, false),
-                'emoji' => Catalog::directionEmoji($key),
             ];
         }
 
@@ -753,7 +754,7 @@ final class RegistrationController
     }
 
     /**
-     * @return array<int,array{value:string,label:string,badge:string,emoji:string}>
+     * @return array<int,array{value:string,label:string,badge:string,icon:string}>
      */
     private function statusOptions(): array
     {
@@ -767,7 +768,7 @@ final class RegistrationController
     }
 
     /**
-     * @return array{value:string,label:string,badge:string,emoji:string}
+     * @return array{value:string,label:string,badge:string,icon:string}
      */
     private function statusOption(RegistrationStatus $status): array
     {
@@ -775,7 +776,13 @@ final class RegistrationController
             'value' => $status->value,
             'label' => Lang::t($status->labelKey(), $this->locale()),
             'badge' => $status->badge(),
-            'emoji' => $status->emoji(),
+            // The panel draws the status as an inline SVG (partials/icon.php);
+            // the enum's emoji belongs to the Telegram messages, not here.
+            'icon'  => match ($status) {
+                RegistrationStatus::Pending  => 'clock',
+                RegistrationStatus::Approved => 'check',
+                RegistrationStatus::Rejected => 'x',
+            },
         ];
     }
 

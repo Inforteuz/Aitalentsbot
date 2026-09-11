@@ -36,7 +36,10 @@ $barLocale   = isset($panel_locale) && is_string($panel_locale) && $panel_locale
 // The operator's initial, used as the avatar glyph.
 $barInitial = $barUser === '' ? '·' : mb_strtoupper(mb_substr($barUser, 0, 1, 'UTF-8'), 'UTF-8');
 
-// Locales enabled in config.php, with their native names from Lang::available().
+// Locales enabled in config.php, by their plain native name. Lang::available()
+// carries a flag emoji as well, which is right for the bot's own picker inside
+// Telegram but wrong here: Windows ships no font for the regional-indicator
+// pairs, so a browser there would print a bare "UZ" next to the name.
 $barLocales = [];
 
 foreach ($app->locales() as $barCode) {
@@ -44,7 +47,7 @@ foreach ($app->locales() as $barCode) {
         continue;
     }
 
-    $barLocales[$barCode] = Lang::available()[$barCode] ?? strtoupper($barCode);
+    $barLocales[$barCode] = Lang::name($barCode);
 }
 
 ?>
