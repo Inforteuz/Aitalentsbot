@@ -105,13 +105,17 @@ $bsAudience = static function (array $filters) use ($bsLocale): array {
         }
     }
 
-    $district = (string) ($filters['district'] ?? '');
+    // The filters column is JSON written by an earlier release (or by hand), so
+    // a value here can be anything, including an array. Render only scalars.
+    $districtRaw = $filters['district'] ?? '';
+    $district    = is_scalar($districtRaw) ? (string) $districtRaw : '';
 
     if ($district !== '' && Catalog::hasDistrict($district)) {
         $chips[] = Catalog::districtLabel($district, $bsLocale);
     }
 
-    $direction = (string) ($filters['direction'] ?? '');
+    $directionRaw = $filters['direction'] ?? '';
+    $direction    = is_scalar($directionRaw) ? (string) $directionRaw : '';
 
     if ($direction !== '' && Catalog::hasDirection($direction)) {
         $chips[] = Catalog::directionLabel($direction, $bsLocale, false);
