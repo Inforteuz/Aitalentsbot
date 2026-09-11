@@ -22,11 +22,21 @@ declare(strict_types=1);
  *    suite, and the run fails when CurlTransport was ever loaded at all.
  *  - A suite that explodes is reported as a failed assertion; the run carries
  *    on with the next suite.
+ *  - Both halves of the product are driven, not just the bot: the admin panel
+ *    suites render every page and run every controller action through the real
+ *    front controller, so the closing "PHP diagnostics" verdict speaks for
+ *    admin/ as well as for src/. Requests that return normally run in this
+ *    process; the mutating actions — which all end in exit() — run in a small
+ *    generated child process that reports back. See the big comment above
+ *    TestSuites::panelPrimitiveSuite() for the whole design.
  *
  * Exit code: 0 when everything passed, 1 when at least one assertion failed.
  */
 
 use AiTalents\Admin\Auth;
+use AiTalents\Admin\Csrf;
+use AiTalents\Admin\Request;
+use AiTalents\Admin\View;
 use AiTalents\App;
 use AiTalents\Config;
 use AiTalents\Database;
@@ -656,11 +666,14 @@ final class TestSuites
             'Callback data budget'           => $this->callbackBudgetSuite(...),
             'Router guards'                  => $this->routerSuite(...),
             'BroadcastService'               => $this->broadcastSuite(...),
+            'Admin panel (session & fixtures)' => $this->panelBoot(...),
+            'Admin panel (View, Request, Csrf)' => $this->panelPrimitiveSuite(...),
             'Admin panel (pages)'            => $this->panelPageSuite(...),
             'Admin panel (hostile input)'    => $this->panelHostileSuite(...),
             'Admin panel (pathological data)' => $this->panelPathologicalSuite(...),
             'Admin panel (controller actions)' => $this->panelActionSuite(...),
             'Admin panel (empty database)'   => $this->panelEmptySuite(...),
+            'Admin panel (Russian interface)' => $this->panelRussianSuite(...),
             'Diagnostics collector (self test)' => $this->diagnosticsProbeSuite(...),
             'PHP 8.1 compatibility scan'     => $this->compatibilitySuite(...),
         ];
@@ -2961,6 +2974,122 @@ final class TestSuites
      ===================================================================== */
 
     /* ---------------------------------------------------------------------
+     | View, Request and Csrf — the three classes every screen leans on
+     */
+
+    private function panelPrimitiveSuite(): void
+    {
+        $this->panelBoot();
+
+        /* -- View::link() -------------------------------------------------- */
+
+        eq('index.php', View::link([]), 'link() without parameters is the entry point');
+        eq('index.php?p=users', View::link(['p' => 'users']), 'link() builds a page URL');
+        eq(
+            'index.php?p=registrations&status=pending',
+            View::link(['p' => 'registrations', 'status' => 'pending']),
+            'link() keeps the parameter order it was given'
+        );
+        eq('index.php?p=users&page=2', View::link(['p' => 'users', 'page' => 2]), 'link() stringifies an int');
+        eq('index.php?flag=1', View::link(['flag' => true]), 'link() renders true as 1');
+        eq('index.php?flag=0', View::link(['flag' => false]), 'link() renders false as 0');
+        eq('index.php?p=users', View::link(['p' => 'users', 'q' => null]), 'link() drops a null value');
+        eq(
+            'index.php?ids[]=1&ids[]=2',
+            View::link(['ids' => [1, 2]]),
+            'link() expands a list into repeated []'
+        );
+        eq(
+            'index.php?q=a%20b%26c%3Dd',
+            View::link(['q' => 'a b&c=d']),
+            'link() URL encodes the separators a value could smuggle in'
+        );
+        eq('index.php', View::link(['' => 'x']), 'link() ignores an empty parameter name');
+        eq('index.php', View::link([new \stdClass()]), 'link() ignores an unusable value');
+
+        $view = new View($this->app, $this->root . '/admin/views');
+        $view->setPage('registration');
+
+        ok('a shipped template is found', $view->exists('dashboard'));
+        ok('a template outside the view directory is not', !$view->exists('../bootstrap'));
+        ok('a template name with a dot is refused', !$view->exists('layout.php'));
+        eq('', $view->active('users'), 'active() is empty for another page');
+        eq(View::ACTIVE_CLASS, $view->active('registrations'), 'the detail screen keeps its list entry highlighted');
+        eq('registration', $view->currentPage(), 'currentPage() reports what the router resolved');
+
+        /* -- Request ------------------------------------------------------- */
+
+        $_GET = ['page' => '3', 'q' => " salom \x07dunyo ", 'arr' => ['x'], 'float' => '2.5'];
+        $_POST = ['page' => '7', 'note' => "line\nbreak", 'zero' => '0'];
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+
+        eq('POST', Request::method(), 'method() reports the verb');
+        ok('isPost() agrees with method()', Request::isPost());
+        eq(7, Request::int('page'), 'int() prefers the body over the query string');
+        eq(0, Request::int('zero'), 'int() reads a literal zero');
+        eq(42, Request::int('missing', 42), 'int() falls back to the default');
+        eq(42, Request::int('float', 42), 'int() refuses "2.5"');
+        eq(42, Request::int('arr', 42), 'int() refuses an array');
+        eq("line\nbreak", Request::str('note'), 'str() keeps newlines');
+        eq('salom dunyo', Request::str('q'), 'str() strips control characters and trims');
+        eq('fallback', Request::str('arr', 'fallback'), 'str() refuses an array');
+        eq(['x'], Request::get('arr'), 'get() hands an array back untouched');
+        eq(null, Request::get('nope'), 'get() defaults to null');
+        eq(null, Request::post('page_missing'), 'post() defaults to null');
+
+        $_SERVER['REQUEST_METHOD'] = 'NOT A VERB';
+        eq('GET', Request::method(), 'a nonsense verb degrades to GET');
+
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        unset($_POST['page']);
+        eq(3, Request::int('page'), 'int() falls back to the query string');
+
+        eq('127.0.0.1', Request::ip(), 'ip() reads REMOTE_ADDR');
+        ok('an untrusted proxy header is ignored', !Request::trustProxy());
+
+        $_SERVER['REMOTE_ADDR'] = 'not-an-ip';
+        eq('0.0.0.0', Request::ip(), 'an unusable REMOTE_ADDR becomes 0.0.0.0');
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+
+        ok('wantsJson() is false for a normal page view', !Request::wantsJson());
+        $_GET['format'] = 'json';
+        ok('wantsJson() honours ?format=json', Request::wantsJson());
+        $_GET['format'] = ['json'];
+        ok('wantsJson() survives ?format[]=json', !Request::wantsJson());
+
+        $_SERVER['HTTP_X_REQUESTED_WITH'] = 'XMLHttpRequest';
+        ok('wantsJson() honours the fetch() header', Request::wantsJson());
+        $_SERVER['HTTP_X_REQUESTED_WITH'] = '';
+
+        /* -- Csrf ---------------------------------------------------------- */
+
+        $token = Csrf::token();
+
+        ok('the token is 64 hex characters', preg_match('/^[a-f0-9]{64}$/', $token) === 1);
+        eq($token, Csrf::token(), 'the token is stable inside one session');
+        ok('the session token verifies', Csrf::check($token));
+        ok('a null token is refused', !Csrf::check(null));
+        ok('an empty token is refused', !Csrf::check(''));
+        ok('a foreign token is refused', !Csrf::check(str_repeat('0', 64)));
+        ok('a truncated token is refused', !Csrf::check(substr($token, 0, 32)));
+        ok('the hidden field carries the token', str_contains(Csrf::field(), $token));
+        ok('the hidden field is named _token', str_contains(Csrf::field(), 'name="' . Csrf::FIELD_NAME . '"'));
+
+        Csrf::rotate();
+        $rotated = Csrf::token();
+
+        ok('rotating mints a new token', $rotated !== $token);
+        ok('the old token stops working', !Csrf::check($token));
+
+        // Put the snapshot back: every other panel suite posts with its token.
+        $_SESSION[Csrf::SESSION_KEY] = $this->panelSession[Csrf::SESSION_KEY] ?? $rotated;
+        $this->panelSession[Csrf::SESSION_KEY] = $_SESSION[Csrf::SESSION_KEY];
+
+        $_GET = [];
+        $_POST = [];
+    }
+
+    /* ---------------------------------------------------------------------
      | Pages
      */
 
@@ -3315,6 +3444,10 @@ final class TestSuites
     {
         $this->panelBoot();
 
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
         $registrations = $this->app->registrations();
         $users = $this->app->users();
         $ids = $this->panelIds;
@@ -3361,7 +3494,10 @@ final class TestSuites
         ]);
         eq(200, $badLogin['status'], 'a refused login re-renders the form');
         ok('a refused login does not open a session', !isset($badLogin['session'][Auth::KEY_AUTH]));
-        ok('a refused login does not say which half was wrong', !str_contains(strtolower($badLogin['output']), 'password is'));
+        ok(
+            'a refused login shows the one generic message',
+            str_contains($badLogin['output'], htmlspecialchars(Lang::t('panel.login_error', 'uz'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'))
+        );
 
         $loginWhenIn = $this->panelRun('?p=login (already signed in)', ['get' => ['p' => 'login'], 'sent' => true]);
         ok('the login screen redirects a signed-in operator', str_contains($loginWhenIn['output'], 'p=dashboard'));
@@ -3392,12 +3528,19 @@ final class TestSuites
 
         /* -- registrations ----------------------------------------------- */
 
-        foreach (['missing' => ['id' => '999999'], 'array' => ['id' => ['1']], 'negative' => ['id' => '-1']] as $shape => $query) {
-            $detail = $this->panelRun('?p=registration with an ' . $shape . ' id', [
+        $badIds = [
+            'an id that matches no row' => ['id' => '999999'],
+            'an array id'               => ['id' => ['1']],
+            'a negative id'             => ['id' => '-1'],
+            'a non numeric id'          => ['id' => '12abc'],
+        ];
+
+        foreach ($badIds as $shape => $query) {
+            $detail = $this->panelRun('?p=registration with ' . $shape, [
                 'get'  => array_merge(['p' => 'registration'], $query),
                 'sent' => true,
             ]);
-            ok('a registration detail with an ' . $shape . ' id redirects to the list', str_contains($detail['output'], 'p=registrations'));
+            ok('a registration detail with ' . $shape . ' redirects to the list', str_contains($detail['output'], 'p=registrations'));
         }
 
         $approve = $this->panelRun('?p=registrations&a=approve', [
@@ -3868,6 +4011,10 @@ final class TestSuites
     {
         $this->panelBoot();
 
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
         $database = $this->tmpDir . '/panel/empty.sqlite';
 
         foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
@@ -3914,9 +4061,23 @@ final class TestSuites
             $this->panelLangKeys($label . ' (empty database)', (string) $page['html']);
         }
 
-        // A second pass in Russian: panel_locale() caches its answer per
-        // process, so the only honest way to render the panel in ru is a fresh
-        // one — which is exactly what the child process gives us.
+    }
+
+    /* ---------------------------------------------------------------------
+     | The Russian interface
+     */
+
+    private function panelRussianSuite(): void
+    {
+        $this->panelBoot();
+
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
+        // panel_locale() caches its answer for the length of a process, so the
+        // only honest way to render the panel in ru is a fresh one — which is
+        // exactly what a child process is.
         $russian = [];
 
         foreach (self::PANEL_PAGES as $page) {
@@ -3965,6 +4126,10 @@ final class TestSuites
 
         // In a child process: the same warning must travel back in the report,
         // which is what makes a panel diagnostic fail the build.
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
         $probe = $this->panelRun('the child-process diagnostics probe', [
             'get'   => ['p' => 'dashboard'],
             'probe' => true,
@@ -3978,6 +4143,39 @@ final class TestSuites
         );
 
         note('a PHP warning on any panel path fails the run — proven, not assumed');
+
+        // The two markup contracts are only worth their green ticks if they
+        // can go red: feed each of them a page that breaks the rule.
+        $good = '<!doctype html><html><head><script src="assets/app.js" defer></script>'
+            . '<link rel="stylesheet" href="assets/app.css"></head><body><p class="x">Salom</p></body></html>';
+
+        eq([], self::panelCspViolations($good), 'the CSP checker passes a page that follows the rules');
+
+        $offences = [
+            'an inline <script> block'     => '<body><script>alert(1)</script></body>',
+            'a <style> block'              => '<head><style>body{color:red}</style></head>',
+            'a style= attribute'           => '<body><div style="color:red">x</div></body>',
+            'an on…= handler attribute'    => '<body><button onclick="go()">x</button></body>',
+            'a javascript: URL'            => '<body><a href="javascript:go()">x</a></body>',
+        ];
+
+        foreach ($offences as $expected => $markup) {
+            ok(
+                'the CSP checker catches ' . $expected,
+                in_array($expected, self::panelCspViolations($markup), true)
+            );
+        }
+
+        eq(
+            [],
+            self::panelLeakedKeys('<p>' . Lang::t('panel.nav_dashboard', 'uz') . '</p>'),
+            'the language scanner passes markup whose keys all resolved'
+        );
+        eq(
+            ['panel.a_key_that_does_not_exist'],
+            self::panelLeakedKeys('<p>panel.a_key_that_does_not_exist</p>'),
+            'the language scanner catches a key that reached the markup verbatim'
+        );
     }
 
     /* =====================================================================
@@ -3987,8 +4185,9 @@ final class TestSuites
     /**
      * Start the panel session, sign in for real and seed the fixtures.
      *
-     * Runs exactly once; every panel suite calls it so the order of the suites
-     * inside all() stays free.
+     * Registered as a suite of its own so its assertions have a home, and
+     * called by every other panel suite as well: the body runs exactly once,
+     * which keeps the order of the suites inside all() free.
      */
     private function panelBoot(): void
     {
@@ -4299,6 +4498,19 @@ final class TestSuites
             return;
         }
 
+        eq([], self::panelCspViolations($html), $label . ' obeys the panel CSP');
+    }
+
+    /**
+     * Everything in $html the panel's Content-Security-Policy forbids.
+     *
+     * Kept separate from the assertion so the harness can prove the checker
+     * actually detects something — see diagnosticsProbeSuite().
+     *
+     * @return string[]
+     */
+    private static function panelCspViolations(string $html): array
+    {
         $violations = [];
 
         if (preg_match('/<script\b(?![^>]*\bsrc\s*=)[^>]*>/i', $html) === 1) {
@@ -4321,7 +4533,7 @@ final class TestSuites
             $violations[] = 'a javascript: URL';
         }
 
-        eq([], $violations, $label . ' obeys the panel CSP');
+        return $violations;
     }
 
     /**
@@ -4334,6 +4546,25 @@ final class TestSuites
      * it reads the answer rather than the source.
      */
     private function panelLangKeys(string $label, string $html): void
+    {
+        // ?p=logs prints the bot's own log messages and ?p=audit prints audit
+        // action names; both are shaped exactly like a language key, and both
+        // are data rather than markup the templates produced. The scanner is
+        // about the chrome, so those regions are removed before it looks.
+        $dataHeavy = str_contains($label, '?p=logs') || str_contains($label, '?p=audit');
+
+        eq([], self::panelLeakedKeys($html, $dataHeavy), $label . ': no untranslated language key leaked into the markup');
+    }
+
+    /**
+     * Language keys that reached $html verbatim instead of being translated.
+     *
+     * Kept separate from the assertion so the harness can prove the scanner
+     * actually detects something — see diagnosticsProbeSuite().
+     *
+     * @return string[]
+     */
+    private static function panelLeakedKeys(string $html, bool $dataHeavy = false): array
     {
         static $keys = null;
         static $pattern = '';
@@ -4350,11 +4581,7 @@ final class TestSuites
                 . ')\.[a-z0-9_]+(?:\.[a-z0-9_]+)*/';
         }
 
-        // ?p=logs prints the bot's own log messages and ?p=audit prints audit
-        // action names; both are shaped exactly like a language key, and both
-        // are data rather than markup the templates produced. The scanner is
-        // about the chrome, so those regions are removed before it looks.
-        if (str_contains($label, '?p=logs') || str_contains($label, '?p=audit')) {
+        if ($dataHeavy) {
             $html = (string) preg_replace(
                 ['#<tbody\b.*?</tbody>#is', '#<option\b.*?</option>#is', '#<pre\b.*?</pre>#is'],
                 ' ',
@@ -4363,9 +4590,7 @@ final class TestSuites
         }
 
         if ($html === '' || preg_match_all($pattern, $html, $matches) < 1) {
-            ok($label . ': no untranslated language key leaked into the markup', true);
-
-            return;
+            return [];
         }
 
         $leaked = [];
@@ -4376,7 +4601,9 @@ final class TestSuites
             }
         }
 
-        eq([], $leaked, $label . ': no untranslated language key leaked into the markup');
+        sort($leaked);
+
+        return $leaked;
     }
 
     /**
@@ -4544,6 +4771,24 @@ final class TestSuites
         }
 
         return $result;
+    }
+
+    /**
+     * Refuse to pretend the mutating actions are covered without proc_open().
+     *
+     * A host that disables it cannot run those cases at all — and this whole
+     * file exists because coverage that quietly disappears is how three real
+     * warnings shipped, so the answer is one loud failure, never a skip.
+     */
+    private function panelChildProcesses(): bool
+    {
+        if (function_exists('proc_open')) {
+            return true;
+        }
+
+        ok('proc_open() is available (every mutating panel action needs a child process)', false);
+
+        return false;
     }
 
     /** Create (once) the directory the child-process plumbing lives in. */
