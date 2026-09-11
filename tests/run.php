@@ -22,13 +22,15 @@ declare(strict_types=1);
  *    suite, and the run fails when CurlTransport was ever loaded at all.
  *  - A suite that explodes is reported as a failed assertion; the run carries
  *    on with the next suite.
- *  - Both halves of the product are driven, not just the bot: the admin panel
+ *  - Every part of the product is driven, not just the bot: the admin panel
  *    suites render every page and run every controller action through the real
- *    front controller, so the closing "PHP diagnostics" verdict speaks for
- *    admin/ as well as for src/. Requests that return normally run in this
- *    process; the mutating actions — which all end in exit() — run in a small
- *    generated child process that reports back. See the big comment above
- *    TestSuites::panelPrimitiveSuite() for the whole design.
+ *    front controller, and index.php, setup.php, cli.php and tools/seed.php are
+ *    each booted as themselves, so the closing "PHP diagnostics" verdict speaks
+ *    for admin/ and the entry points as well as for src/. Requests that return
+ *    normally run in this process; everything that ends in exit() runs in a
+ *    small generated child process that reports back. See the big comments
+ *    above TestSuites::panelPrimitiveSuite() and TestSuites::webhookSuite()
+ *    for the whole design.
  *
  * Exit code: 0 when everything passed, 1 when at least one assertion failed.
  */
@@ -611,7 +613,7 @@ final class TestSuites
     /** Ids the panel fixtures created, so the suites can address them by name. */
     private array $panelIds = [];
 
-    /** How many panel requests the suites drove (in process + child processes). */
+    /** Requests the panel and entry-point suites drove (in process + children). */
     private int $panelRequests = 0;
 
     /** Absolute path of the generated child-process worker (see panelWorker()). */
@@ -674,12 +676,16 @@ final class TestSuites
             'Admin panel (controller actions)' => $this->panelActionSuite(...),
             'Admin panel (empty database)'   => $this->panelEmptySuite(...),
             'Admin panel (Russian interface)' => $this->panelRussianSuite(...),
+            'Webhook entry point (index.php)' => $this->webhookSuite(...),
+            'Installer (setup.php)'          => $this->setupSuite(...),
+            'Command line (cli.php)'         => $this->cliSuite(...),
+            'Demo seeder (tools/seed.php)'   => $this->seedSuite(...),
             'Diagnostics collector (self test)' => $this->diagnosticsProbeSuite(...),
             'PHP 8.1 compatibility scan'     => $this->compatibilitySuite(...),
         ];
     }
 
-    /** How many admin-panel requests the suites drove, for the closing report. */
+    /** How many panel and entry-point requests were driven, for the closing report. */
     public function panelRequests(): int
     {
         return $this->panelRequests;
@@ -4104,6 +4110,1171 @@ final class TestSuites
         }
     }
 
+    /* =====================================================================
+     | The four entry points outside the admin panel
+     |======================================================================
+     | index.php, setup.php, cli.php and tools/seed.php each boot the
+     | application themselves and each end in exit(), so they are driven the
+     | same way the mutating panel actions are: one child process per case,
+     | reporting back through the generated worker.
+     |
+     | Two things had to be solved to make that honest.
+     |
+     |  - CONFIGURATION. All four call `require bootstrap.php`, which honours
+     |    $GLOBALS['AITALENTS_CONFIG']; the worker fills it from the generated
+     |    tests/tmp/panel/config.php and then applies the case's own overrides
+     |    in dot notation, so a case can boot the very same entry point with,
+     |    say, an empty telegram.webhook_secret. The FakeTransport is installed
+     |    on the App before the entry point sees it, so nothing reaches the
+     |    network — and every child reports whether CurlTransport was loaded.
+     |
+     |  - THE REQUEST BODY. index.php reads php://input, which the CLI SAPI
+     |    leaves empty forever (stdin is php://stdin and nothing else, verified:
+     |    redirecting a file into the process does not fill php://input). The
+     |    worker therefore swaps the php:// wrapper for HarnessInputStream for
+     |    the duration of the dispatch, which is the only way to hand the real
+     |    entry point a real webhook body.
+     |
+     | One limit is worth stating plainly: the CLI SAPI never exposes response
+     | headers (headers_list() stays empty even inside a
+     | header_register_callback), so a header such as `Allow:` cannot be read
+     | back from a running request. http_response_code() does work, so every
+     | status code below is the real one; the Allow header is asserted from the
+     | source of the branch that sends it, and that is said where it happens.
+     ===================================================================== */
+
+    /* ---------------------------------------------------------------------
+     | index.php — the webhook
+     */
+
+    private function webhookSuite(): void
+    {
+        $this->panelBoot();
+
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
+        $secret = (string) $this->app->config('telegram.webhook_secret', '');
+
+        ok('the harness configured a webhook secret to test against', $secret !== '');
+
+        /* -- the status page ---------------------------------------------- */
+
+        $statusCases = [];
+
+        foreach (['GET', 'HEAD'] as $method) {
+            $statusCases['index.php over ' . $method] = $this->entryCase(['entry' => 'webhook', 'method' => $method]);
+        }
+
+        foreach (['PUT', 'DELETE', 'PATCH', 'OPTIONS'] as $method) {
+            $statusCases['index.php over ' . $method] = $this->entryCase(['entry' => 'webhook', 'method' => $method]);
+        }
+
+        // None of these six touches the database or writes a file, so they can
+        // all run at once (see panelRunGroup()).
+        $answers = $this->panelRunGroup($statusCases);
+
+        foreach (['GET', 'HEAD'] as $method) {
+            $status = $answers['index.php over ' . $method];
+
+            eq(200, $status['status'], $method . ' answers 200');
+            eq("OK\n", $status['stdout'], $method . ' answers exactly "OK" and nothing else');
+
+            // A passer-by who found the webhook URL must learn nothing from it.
+            $leaks = [];
+
+            foreach ([
+                'the bot token'    => (string) $this->app->config('telegram.token', ''),
+                'the bot username' => (string) $this->app->config('telegram.bot_username', ''),
+                'the app name'     => (string) $this->app->config('app.name', ''),
+                'the secret'       => $secret,
+                'the version'      => (string) $this->app->version(),
+            ] as $what => $needle) {
+                if ($needle !== '' && str_contains($status['stdout'], $needle)) {
+                    $leaks[] = $what;
+                }
+            }
+
+            eq([], $leaks, $method . ' leaks neither the bot identity nor any configuration state');
+        }
+
+        /* -- everything that is not GET/HEAD/POST -------------------------- */
+
+        foreach (['PUT', 'DELETE', 'PATCH', 'OPTIONS'] as $method) {
+            $refused = $answers['index.php over ' . $method];
+
+            eq(405, $refused['status'], $method . ' answers 405');
+            eq("Method Not Allowed\n", $refused['stdout'], $method . ' says so in the body');
+        }
+
+        // The CLI SAPI cannot report response headers back (headers_list() is
+        // empty there even from inside header_register_callback), so the Allow
+        // header of the branch just exercised is read from the source instead.
+        $source = (string) file_get_contents($this->root . '/index.php');
+        $offset = strpos($source, "405");
+
+        ok(
+            'the 405 branch sends an Allow header naming the three verbs',
+            $offset !== false
+            && preg_match("/header\\(\\s*'Allow:\\s*GET,\\s*HEAD,\\s*POST'\\s*\\)/", $source) === 1
+        );
+
+        /* -- the secret token gate ---------------------------------------- */
+
+        $body = $this->webhookUpdate(self::PANEL_BASE_ID + 500, '/help');
+
+        $refusals = [
+            'no secret header at all'        => null,
+            'an empty secret header'         => '',
+            'a wrong secret'                 => 'completely-wrong-secret-value',
+            'a secret one byte short'        => substr($secret, 0, -1),
+            'a secret one byte long'         => $secret . 'x',
+            'a secret differing by one byte' => substr($secret, 0, -1) . (substr($secret, -1) === 'x' ? 'y' : 'x'),
+            'a secret in the wrong case'     => strtoupper($secret),
+        ];
+
+        $gateCases = [];
+
+        foreach ($refusals as $label => $header) {
+            $case = [
+                'entry'  => 'webhook',
+                'method' => 'POST',
+                'body'   => $body,
+            ];
+
+            if ($header !== null) {
+                $case['server'] = ['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN' => $header];
+            }
+
+            $gateCases['index.php with ' . $label] = $this->entryCase($case);
+        }
+
+        // hash_equals(), not "==": these two strings are equal under PHP's
+        // loose numeric-string comparison and different to a constant-time one.
+        $gateCases['index.php against a loose comparison'] = $this->entryCase([
+            'entry'      => 'webhook',
+            'method'     => 'POST',
+            'body'       => $body,
+            'config_set' => ['telegram.webhook_secret' => '0e12345678901234567890123456789012'],
+            'server'     => ['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN' => '0e00000000000000000000000000000000'],
+        ]);
+
+        $gateCases['index.php without a configured secret'] = $this->entryCase([
+            'entry'      => 'webhook',
+            'method'     => 'POST',
+            'body'       => $body,
+            'config_set' => ['telegram.webhook_secret' => ''],
+        ]);
+
+        // Anything other than the literal true must not unlock it.
+        $truthyValues = ['1', 1, 'true', 'yes'];
+
+        foreach ($truthyValues as $truthy) {
+            $gateCases['index.php with allow_insecure_webhook = ' . describe($truthy)] = $this->entryCase([
+                'entry'      => 'webhook',
+                'method'     => 'POST',
+                'body'       => $body,
+                'config_set' => [
+                    'telegram.webhook_secret'        => '',
+                    'telegram.allow_insecure_webhook' => $truthy,
+                ],
+            ]);
+        }
+
+        // Every one of these is refused before a byte of the body is read, so
+        // none of them can see another: one wave (see panelRunGroup()).
+        $gate = $this->panelRunGroup($gateCases);
+
+        foreach ($refusals as $label => $header) {
+            $refused = $gate['index.php with ' . $label];
+
+            eq(401, $refused['status'], 'a webhook with ' . $label . ' answers 401');
+            eq("Unauthorized\n", $refused['stdout'], 'a webhook with ' . $label . ' says Unauthorized');
+            eq([], $refused['calls'], 'a webhook with ' . $label . ' never reaches the bot');
+        }
+
+        eq(
+            401,
+            $gate['index.php against a loose comparison']['status'],
+            'two strings that are loosely equal ("0e…") are still refused'
+        );
+
+        /* -- fail closed without a configured secret ----------------------- */
+
+        $unconfigured = $gate['index.php without a configured secret'];
+
+        eq(401, $unconfigured['status'], 'an unconfigured webhook secret fails closed with 401');
+        eq([], $unconfigured['calls'], 'an unconfigured webhook secret dispatches nothing');
+
+        foreach ($truthyValues as $truthy) {
+            eq(
+                401,
+                $gate['index.php with allow_insecure_webhook = ' . describe($truthy)]['status'],
+                'allow_insecure_webhook = ' . describe($truthy) . ' does not unlock the webhook'
+            );
+        }
+
+        $escapeHatch = $this->entryRun('index.php with allow_insecure_webhook', [
+            'entry'      => 'webhook',
+            'method'     => 'POST',
+            'body'       => $this->webhookUpdate(self::PANEL_BASE_ID + 501, '/help'),
+            'config_set' => [
+                'telegram.webhook_secret'        => '',
+                'telegram.allow_insecure_webhook' => true,
+            ],
+        ]);
+
+        eq(200, $escapeHatch['status'], 'allow_insecure_webhook is the only way past an empty secret');
+        ok('the escape hatch really dispatches', $escapeHatch['calls'] !== []);
+
+        /* -- bodies that must never produce a diagnostic ------------------- */
+
+        $deep = '';
+
+        for ($level = 0; $level < 900; $level++) {
+            $deep .= '[';
+        }
+
+        $bodies = [
+            'an empty body'                  => '',
+            'whitespace only'                => "  \n\t ",
+            'the literal null'               => 'null',
+            'an empty array'                 => '[]',
+            'a bare scalar'                  => '42',
+            'a bare string'                  => '"salom"',
+            'a truncated object'             => '{"update_id":1,',
+            'invalid UTF-8'                  => "{\"update_id\":1,\"message\":\"\xC3\x28\xA0\xA1\"}",
+            'a NUL byte'                     => "{\"update_id\":1,\"text\":\"a\0b\"}",
+            'JSON nested 900 levels deep'    => $deep,
+            'an object without an update_id' => '{"message":{"text":"hi"}}',
+            'a message that is a string'     => '{"update_id":7,"message":"not an object"}',
+            'a message that is a list'       => '{"update_id":8,"message":[1,2,3]}',
+            'a from that is a string'        => '{"update_id":9,"message":{"chat":{"id":1,"type":"private"},"from":"nobody","text":"x"}}',
+            'a chat id that is an array'     => '{"update_id":10,"message":{"chat":{"id":[1],"type":"private"},"from":{"id":1},"text":"x"}}',
+            'two megabytes of junk'          => str_repeat('x', 2 * 1024 * 1024),
+        ];
+
+        // All sixteen go through one process: a POST that passes the secret
+        // gate is the one webhook path that does not exit, so index.php can be
+        // required once per body. Every body still gets its own diagnostics.
+        $malformed = $this->entryRun('index.php with sixteen malformed bodies', [
+            'entry'  => 'webhook',
+            'method' => 'POST',
+            'bodies' => $bodies,
+            'server' => ['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN' => $secret],
+        ]);
+
+        eq(count($bodies), count($malformed['pages']), 'every malformed body was processed to the end');
+        eq(200, $malformed['status'], 'a malformed body never changes the answer away from 200');
+        eq(
+            str_repeat('OK', count($malformed['pages'])),
+            $malformed['stdout'],
+            'every malformed body was answered with exactly "OK" and nothing else'
+        );
+
+        foreach ($malformed['pages'] as $index => $answer) {
+            $label = array_keys($bodies)[(int) $index] ?? (string) $answer['label'];
+
+            eq(200, (int) $answer['code'], 'a webhook with ' . $label . ' still answers Telegram 200');
+            eq([], $answer['diagnostics'], 'a webhook with ' . $label . ' raises no PHP diagnostic');
+        }
+
+        /* -- the happy path, end to end through the real entry point ------- */
+
+        $telegramId = self::PANEL_BASE_ID + 510;
+
+        $accepted = $this->entryRun('index.php with a valid update', [
+            'entry'       => 'webhook',
+            'method'      => 'POST',
+            'body'        => $this->webhookUpdate($telegramId, '/help'),
+            'server'      => ['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN' => $secret],
+            'flush_probe' => true,
+        ]);
+
+        eq(200, $accepted['status'], 'a valid update answers 200');
+        eq('OK', $accepted['stdout'], 'a valid update answers exactly "OK"');
+        ok('a valid update reaches the bot', in_array('sendMessage', $accepted['calls'], true));
+
+        $user = $this->app->users()->findByTelegramId($telegramId);
+
+        ok('the update created the user row', $user !== null);
+        eq($telegramId, (int) ($user['telegram_id'] ?? 0), 'the row belongs to the sender');
+
+        // The promise index.php makes to Telegram: answer first, work after.
+        ok('the bot was called at all, so the probe has something to say', $accepted['flush'] !== []);
+
+        $early = [];
+
+        foreach ($accepted['flush'] as $index => $observation) {
+            if (($observation['headers_sent'] ?? false) !== true || (int) ($observation['ob_level'] ?? -1) !== 0) {
+                $early[] = 'call #' . ((int) $index + 1);
+            }
+        }
+
+        eq([], $early, 'the response was flushed to Telegram before the dispatch ran');
+
+        /* -- a throwable inside dispatch ----------------------------------- */
+
+        // The registration flow answers every message; a transport that refuses
+        // to answer makes the dispatch throw from inside Router.
+        $crash = $this->entryRun('index.php when dispatch throws', [
+            'entry'  => 'webhook',
+            'method' => 'POST',
+            'body'   => $this->webhookUpdate(self::PANEL_BASE_ID + 511, '/start'),
+            'server' => ['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN' => $secret],
+            'queue'  => ['{"ok":false,"error_code":500,"description":"harness induced failure"}'],
+        ]);
+
+        eq(200, $crash['status'], 'a failure inside the dispatch still answers Telegram 200');
+        eq('OK', $crash['stdout'], 'a failure inside the dispatch answers exactly "OK"');
+
+        $spill = [];
+
+        foreach ([
+            'a stack trace'      => 'Stack trace',
+            'a file path'        => $this->root,
+            'an exception class' => 'Exception',
+            'the bot token'      => (string) $this->app->config('telegram.token', ''),
+            'the secret'         => $secret,
+        ] as $what => $needle) {
+            if ($needle !== '' && str_contains($crash['stdout'] . $crash['stderr'], $needle)) {
+                $spill[] = $what;
+            }
+        }
+
+        eq([], $spill, 'a failure inside the dispatch leaks nothing onto the wire');
+
+        // What does not reach the wire has to reach the log file instead.
+        $logged = implode("\n", $this->app->logger()->tail(400));
+
+        ok(
+            'the failure was written to the log file',
+            str_contains($logged, 'harness induced failure')
+        );
+    }
+
+    /**
+     * A Telegram update as the raw JSON body of a webhook request.
+     */
+    private function webhookUpdate(int $telegramId, string $text): string
+    {
+        return (string) json_encode([
+            'update_id' => ++$this->updateId,
+            'message'   => [
+                'message_id' => ++$this->messageId,
+                'from'       => $this->sender($telegramId),
+                'chat'       => ['id' => $telegramId, 'type' => 'private'],
+                'date'       => 1757000000,
+                'text'       => $text,
+            ],
+        ], JSON_UNESCAPED_UNICODE);
+    }
+
+    /* ---------------------------------------------------------------------
+     | setup.php — the guided installer
+     */
+
+    private function setupSuite(): void
+    {
+        $this->panelBoot();
+
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
+        $key = (string) $this->app->config('security.setup_key', '');
+        $token = hash_hmac('sha256', 'aitalents:setup:csrf:v1', $key);
+
+        ok('the harness configured a setup key to test against', $key !== '');
+
+        /* -- the gate ------------------------------------------------------ */
+
+        $refusals = [
+            'no key at all'            => [],
+            'an empty key'             => ['key' => ''],
+            'a wrong key'              => ['key' => 'not-the-setup-key'],
+            'a key one byte short'     => ['key' => substr($key, 0, -1)],
+            'a key one byte long'      => ['key' => $key . 'x'],
+            'an array key'             => ['key' => ['x']],
+        ];
+
+        $unconfigured = [[], ['key' => ''], ['key' => '0'], ['key' => 'anything']];
+        $gateCases = [];
+
+        foreach ($refusals as $label => $query) {
+            $gateCases['setup.php with ' . $label] = $this->entryCase(['entry' => 'setup', 'get' => $query]);
+        }
+
+        // An empty security.setup_key must not be unlockable by an equally
+        // empty ?key= — the two emptinesses must never be allowed to match.
+        foreach ($unconfigured as $index => $query) {
+            $gateCases['setup.php with no configured key #' . ($index + 1)] = $this->entryCase([
+                'entry'      => 'setup',
+                'get'        => $query,
+                'config_set' => ['security.setup_key' => ''],
+            ]);
+        }
+
+        // The installer refuses before it opens the database or writes a line,
+        // and it deliberately sleeps a quarter of a second on a wrong key, so
+        // these ten cases are the ones that most want a wave of their own.
+        $gate = $this->panelRunGroup($gateCases);
+
+        foreach ($refusals as $label => $query) {
+            $refused = $gate['setup.php with ' . $label];
+
+            eq(403, $refused['status'], 'setup.php with ' . $label . ' answers 403');
+            ok('setup.php with ' . $label . ' shows the closed door', str_contains($refused['stdout'], 'Kirish taqiqlangan'));
+            ok('setup.php with ' . $label . ' never echoes the key', !str_contains($refused['stdout'], $key));
+        }
+
+        foreach ($unconfigured as $index => $query) {
+            $disabled = $gate['setup.php with no configured key #' . ($index + 1)];
+
+            eq(403, $disabled['status'], 'an unconfigured setup key answers 403 (case ' . ($index + 1) . ')');
+            ok(
+                'an unconfigured setup key says the installer is switched off (case ' . ($index + 1) . ')',
+                str_contains($disabled['stdout'], 'security.setup_key')
+            );
+        }
+
+        /* -- the page ------------------------------------------------------ */
+
+        $page = $this->entryRun('setup.php with the correct key', [
+            'entry' => 'setup',
+            'get'   => ['key' => $key],
+            'queue' => [
+                '{"ok":true,"result":{"url":"","pending_update_count":0}}',
+                '{"ok":true,"result":{"id":1,"is_bot":true,"username":"AndijonAiTalentsTestBot"}}',
+            ],
+        ]);
+
+        eq(200, $page['status'], 'the correct key opens the installer');
+        ok('the installer renders a complete document', str_contains($page['stdout'], '</html>'));
+        ok('the installer has real content', strlen($page['stdout']) > 8000);
+        ok('the installer offers the migration runner', str_contains($page['stdout'], 'migrate'));
+        ok('the installer carries its own form token', str_contains($page['stdout'], $token));
+
+        $secrets = [];
+
+        foreach ([
+            'the bot token'        => (string) $this->app->config('telegram.token', ''),
+            'the webhook secret'   => (string) $this->app->config('telegram.webhook_secret', ''),
+            'the panel password'   => (string) $this->app->config('security.admin_panel.password_hash', ''),
+        ] as $what => $needle) {
+            if ($needle !== '' && str_contains($page['stdout'], $needle)) {
+                $secrets[] = $what;
+            }
+        }
+
+        eq([], $secrets, 'the installer never prints a secret');
+
+        /* -- the POST actions ---------------------------------------------- */
+
+        $untokened = $this->entryRun('setup.php POST without the token', [
+            'entry'  => 'setup',
+            'method' => 'POST',
+            'get'    => ['key' => $key],
+            'post'   => ['action' => 'migrate'],
+            'csrf'   => 'none',
+        ]);
+
+        eq(200, $untokened['status'], 'a POST without the token still renders the page');
+        ok(
+            'a POST without the token is refused with the CSRF message',
+            str_contains($untokened['stdout'], Text::esc(Lang::t('panel.csrf_invalid', 'uz')))
+        );
+
+        $migrate = $this->entryRun('setup.php POST migrate', [
+            'entry'  => 'setup',
+            'method' => 'POST',
+            'get'    => ['key' => $key],
+            'post'   => ['action' => 'migrate', '_token' => $token],
+            'csrf'   => 'none',
+        ]);
+
+        eq(200, $migrate['status'], 'the migration runner answers 200');
+        ok('the migration runner reports back', str_contains($migrate['stdout'], '</html>'));
+
+        // Registering a webhook while the secret is empty would produce a bot
+        // that silently refuses every update, so the installer must refuse and
+        // hand the operator a ready made value instead.
+        $insecureHook = $this->entryRun('setup.php POST webhook_set without a secret', [
+            'entry'      => 'setup',
+            'method'     => 'POST',
+            'get'        => ['key' => $key],
+            'post'       => ['action' => 'webhook_set', 'url' => 'https://tests.invalid/bot/index.php', '_token' => $token],
+            'csrf'       => 'none',
+            'config_set' => ['telegram.webhook_secret' => ''],
+        ]);
+
+        eq(200, $insecureHook['status'], 'the refused webhook registration still renders the page');
+        ok(
+            'no webhook is registered while the secret is empty',
+            !in_array('setWebhook', $insecureHook['calls'], true)
+        );
+        ok(
+            'the installer offers a generated webhook secret instead',
+            str_contains($insecureHook['stdout'], 'webhook_secret')
+            && preg_match('/[0-9a-f]{48}/', $insecureHook['stdout']) === 1
+        );
+
+        $hook = $this->entryRun('setup.php POST webhook_set', [
+            'entry'  => 'setup',
+            'method' => 'POST',
+            'get'    => ['key' => $key],
+            'post'   => ['action' => 'webhook_set', 'url' => 'https://tests.invalid/bot/index.php', '_token' => $token],
+            'csrf'   => 'none',
+            'queue'  => ['{"ok":true,"result":true,"description":"Webhook was set"}'],
+        ]);
+
+        eq(200, $hook['status'], 'registering the webhook answers 200');
+        ok('setWebhook was called', in_array('setWebhook', $hook['calls'], true));
+
+        $badUrl = $this->entryRun('setup.php POST webhook_set over http', [
+            'entry'  => 'setup',
+            'method' => 'POST',
+            'get'    => ['key' => $key],
+            'post'   => ['action' => 'webhook_set', 'url' => 'http://insecure.invalid/hook', '_token' => $token],
+            'csrf'   => 'none',
+        ]);
+
+        ok(
+            'a plain-http webhook URL is refused by the installer too',
+            !in_array('setWebhook', $badUrl['calls'], true)
+        );
+
+        $dropHook = $this->entryRun('setup.php POST webhook_delete', [
+            'entry'  => 'setup',
+            'method' => 'POST',
+            'get'    => ['key' => $key],
+            'post'   => ['action' => 'webhook_delete', '_token' => $token],
+            'csrf'   => 'none',
+            'queue'  => ['{"ok":true,"result":true}'],
+        ]);
+
+        ok('deleteWebhook was called', in_array('deleteWebhook', $dropHook['calls'], true));
+
+        $hash = $this->entryRun('setup.php POST the password hash generator', [
+            'entry'  => 'setup',
+            'method' => 'POST',
+            'get'    => ['key' => $key],
+            'post'   => ['action' => 'make_hash', 'password' => 'a-long-enough-demo-password', '_token' => $token],
+            'csrf'   => 'none',
+        ]);
+
+        eq(200, $hash['status'], 'the hash generator answers 200');
+        ok(
+            'the hash generator produces a password_hash() digest',
+            preg_match('/\\$2y\\$|\\$argon2/', $hash['stdout']) === 1
+        );
+        ok('the hash generator never echoes the password', !str_contains($hash['stdout'], 'a-long-enough-demo-password'));
+    }
+
+    /* ---------------------------------------------------------------------
+     | cli.php
+     */
+
+    private function cliSuite(): void
+    {
+        $this->panelBoot();
+
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
+        $workspace = $this->entryWorkspace();
+
+        // cli.php refuses to run over HTTP. The SAPI of a running process
+        // cannot be changed, so the guard is read from the source: it must come
+        // before anything else the file does, bootstrap.php included.
+        $this->entrySapiGuard($this->root . '/cli.php', 'cli.php');
+
+        $commands = [
+            'help'             => [['help'], 0, 'Usage'],
+            'no command'       => [[], 0, 'Usage'],
+            '--help'           => [['--help'], 0, 'Usage'],
+            'an unknown command' => [['definitely-not-a-command'], 1, 'Unknown command'],
+            'migrate'          => [['migrate', '--no-color'], 0, ''],
+            'stats'            => [['stats', '--no-color'], 0, ''],
+            'cleanup'          => [['cleanup', '--days=3650', '--no-color'], 0, ''],
+        ];
+
+        $commandCases = [];
+
+        foreach ($commands as $label => $expectation) {
+            $commandCases['cli.php ' . $label] = $this->entryCase(['entry' => 'cli', 'argv' => $expectation[0]]);
+        }
+
+        // migrate/stats/cleanup do read and write, so they stay in order; the
+        // three that only print do not, and ride along in the same wave.
+        $commandResults = $this->panelRunGroup(array_slice($commandCases, 0, 4, true));
+
+        foreach (array_slice($commands, 4, null, true) as $label => $expectation) {
+            $commandResults['cli.php ' . $label] = $this->entryRun('cli.php ' . $label, $commandCases['cli.php ' . $label]);
+        }
+
+        foreach ($commands as $label => $expectation) {
+            [$argv, $exit, $needle] = $expectation;
+
+            $result = $commandResults['cli.php ' . $label];
+            $printed = $result['stdout'] . $result['stderr'];
+
+            eq($exit, $result['exit'], 'cli.php ' . $label . ' exits ' . $exit);
+            ok('cli.php ' . $label . ' printed something', trim($printed) !== '');
+
+            if ($needle !== '') {
+                ok('cli.php ' . $label . ' mentions "' . $needle . '"', str_contains($printed, $needle));
+            }
+        }
+
+        $info = $this->entryRun('cli.php webhook:info', [
+            'entry' => 'cli',
+            'argv'  => ['webhook:info', '--no-color'],
+            'queue' => ['{"ok":true,"result":{"url":"https://tests.invalid/bot/index.php","pending_update_count":3}}'],
+        ]);
+
+        eq(0, $info['exit'], 'cli.php webhook:info exits 0');
+        ok('cli.php webhook:info called getWebhookInfo', in_array('getWebhookInfo', $info['calls'], true));
+
+        $setHook = $this->entryRun('cli.php webhook:set', [
+            'entry' => 'cli',
+            'argv'  => ['webhook:set', 'https://tests.invalid/bot/index.php', '--no-color'],
+            'queue' => ['{"ok":true,"result":true,"description":"Webhook was set"}'],
+        ]);
+
+        eq(0, $setHook['exit'], 'cli.php webhook:set exits 0');
+        ok('cli.php webhook:set called setWebhook', in_array('setWebhook', $setHook['calls'], true));
+
+        $badHook = $this->entryRun('cli.php webhook:set over http', [
+            'entry' => 'cli',
+            'argv'  => ['webhook:set', 'http://insecure.invalid/hook', '--no-color'],
+        ]);
+
+        eq(1, $badHook['exit'], 'cli.php webhook:set refuses a plain-http URL');
+        eq([], $badHook['calls'], 'cli.php webhook:set never calls Telegram with a refused URL');
+
+        $dropHook = $this->entryRun('cli.php webhook:delete', [
+            'entry' => 'cli',
+            'argv'  => ['webhook:delete', '--no-color'],
+            'queue' => ['{"ok":true,"result":true}'],
+        ]);
+
+        eq(0, $dropHook['exit'], 'cli.php webhook:delete exits 0');
+        ok('cli.php webhook:delete called deleteWebhook', in_array('deleteWebhook', $dropHook['calls'], true));
+
+        $poll = $this->entryRun('cli.php poll --once', [
+            'entry' => 'cli',
+            'argv'  => ['poll', '--once', '--timeout=1', '--limit=1', '--no-color'],
+            'queue' => [
+                '{"ok":true,"result":{"url":"","pending_update_count":0}}',
+                '{"ok":true,"result":{"id":1,"is_bot":true,"username":"AndijonAiTalentsTestBot"}}',
+                '{"ok":true,"result":[' . $this->webhookUpdate(self::PANEL_BASE_ID + 520, '/help') . ']}',
+            ],
+        ]);
+
+        eq(0, $poll['exit'], 'cli.php poll --once exits 0');
+        ok('cli.php poll --once drained one batch', str_contains($poll['stdout'], 'Stopped after 1 update'));
+        ok('cli.php poll --once dispatched the update', in_array('sendMessage', $poll['calls'], true));
+
+        $pollBlocked = $this->entryRun('cli.php poll --once with a webhook registered', [
+            'entry' => 'cli',
+            'argv'  => ['poll', '--once', '--no-color'],
+            'queue' => ['{"ok":true,"result":{"url":"https://tests.invalid/bot/index.php"}}'],
+        ]);
+
+        eq(1, $pollBlocked['exit'], 'cli.php poll refuses to run while a webhook is registered');
+
+        $campaign = $this->app->broadcasts()->create(self::ADMIN_ID, 'CLI kampaniyasi', ['audience' => 'all']);
+        $this->app->broadcasts()->addTargets($campaign, [self::PANEL_BASE_ID + 1, self::PANEL_BASE_ID + 2]);
+        $this->app->broadcasts()->setStatus($campaign, 'running');
+
+        $run = $this->entryRun('cli.php broadcast:run', [
+            'entry' => 'cli',
+            'argv'  => ['broadcast:run', (string) $campaign, '--batch=2', '--no-color'],
+        ]);
+
+        eq(0, $run['exit'], 'cli.php broadcast:run exits 0');
+        ok('cli.php broadcast:run delivered the queue', in_array('sendMessage', $run['calls'], true));
+        eq('done', (string) ($this->app->broadcasts()->find($campaign)['status'] ?? ''), 'the campaign finished');
+
+        $missing = $this->entryRun('cli.php broadcast:run with an unknown id', [
+            'entry' => 'cli',
+            'argv'  => ['broadcast:run', '999999', '--no-color'],
+        ]);
+
+        eq(1, $missing['exit'], 'cli.php broadcast:run refuses an unknown campaign');
+
+        /* -- export: the extension is forced and the file really is XLSX --- */
+
+        $target = $workspace . '/cli-export';
+
+        foreach ([$target, $target . '.xlsx'] as $stale) {
+            if (is_file($stale)) {
+                @unlink($stale);
+            }
+        }
+
+        $export = $this->entryRun('cli.php export', [
+            'entry' => 'cli',
+            'argv'  => ['export', $target, '--no-color'],
+        ]);
+
+        eq(0, $export['exit'], 'cli.php export exits 0');
+        ok('cli.php export never writes the extension-less path', !is_file($target));
+        ok('cli.php export completes the name to .xlsx', is_file($target . '.xlsx'));
+        ok('cli.php export says it renamed the file', str_contains($export['stdout'], '.xlsx'));
+
+        $this->assertXlsxPackage($target . '.xlsx', 'the workbook cli.php export wrote');
+
+        $csvAttempt = $this->entryRun('cli.php export to a .csv path', [
+            'entry' => 'cli',
+            'argv'  => ['export', $workspace . '/cli-export.csv', '--no-color'],
+        ]);
+
+        eq(0, $csvAttempt['exit'], 'cli.php export to a .csv path still exits 0');
+        ok('a .csv path is completed rather than honoured', is_file($workspace . '/cli-export.csv.xlsx'));
+        ok('no CSV file is ever produced', !is_file($workspace . '/cli-export.csv'));
+
+        $hash = $this->entryRun('cli.php admin:hash', [
+            'entry' => 'cli',
+            'argv'  => ['admin:hash', 'a-long-enough-demo-password', '--no-color'],
+        ]);
+
+        eq(0, $hash['exit'], 'cli.php admin:hash exits 0');
+        ok(
+            'cli.php admin:hash prints a password_hash() digest',
+            preg_match('/\\$2y\\$|\\$argon2/', $hash['stdout']) === 1
+        );
+        ok('cli.php admin:hash never echoes the password back', !str_contains($hash['stdout'], 'a-long-enough-demo-password'));
+    }
+
+    /* ---------------------------------------------------------------------
+     | tools/seed.php
+     */
+
+    private function seedSuite(): void
+    {
+        $this->panelBoot();
+
+        if (!$this->panelChildProcesses()) {
+            return;
+        }
+
+        // The seeder writes hundreds of rows, so it gets a database of its own
+        // and never comes near the one the rest of the run is using.
+        $database = $this->entryWorkspace() . '/seed.sqlite';
+
+        foreach ([$database, $database . '-wal', $database . '-shm'] as $file) {
+            if (is_file($file)) {
+                @unlink($file);
+            }
+        }
+
+        $this->entrySapiGuard($this->root . '/tools/seed.php', 'tools/seed.php');
+
+        $seedCase = static function (array $argv, array $extra = []) use ($database): array {
+            return array_merge([
+                'entry'    => 'seed',
+                'argv'     => $argv,
+                'database' => $database,
+                'migrate'  => true,
+            ], $extra);
+        };
+
+        $help = $this->entryRun('tools/seed.php --help', $seedCase(['--help']));
+
+        eq(0, $help['exit'], 'tools/seed.php --help exits 0');
+        ok('tools/seed.php --help prints the usage', str_contains($help['stdout'], '--fresh'));
+        ok('tools/seed.php --help warns about production', str_contains($help['stdout'], 'never run this against a live'));
+
+        $bogus = $this->entryRun('tools/seed.php with an unknown option', $seedCase(['--definitely-not-an-option']));
+
+        eq(1, $bogus['exit'], 'tools/seed.php refuses an unknown option');
+
+        /* -- the first run ------------------------------------------------- */
+
+        $first = $this->entryRun('tools/seed.php on an empty database', $seedCase(['--count=8', '--days=10', '--seed=7']));
+
+        eq(0, $first['exit'], 'tools/seed.php seeds an empty database');
+
+        $seeded = $this->seedDatabase($database);
+        $names = $this->seedNames($seeded);
+
+        eq(8, count($names), 'the seeder wrote exactly the requested number of applications');
+        ok('every seeded user sits in the reserved telegram id range', $this->seedOutsideReservedRange($seeded) === 0);
+
+        /* -- the guards ---------------------------------------------------- */
+
+        $again = $this->entryRun('tools/seed.php a second time', $seedCase(['--count=8', '--seed=7']));
+
+        eq(1, $again['exit'], 'tools/seed.php refuses to seed twice without --fresh');
+        ok(
+            'tools/seed.php explains that demo data is already present',
+            str_contains($again['stdout'] . $again['stderr'], 'already present')
+        );
+        eq($names, $this->seedNames($this->seedDatabase($database)), 'the refused run changed nothing');
+
+        // A row that is unmistakably real: outside the reserved id range and
+        // with a source the seeder never writes.
+        $planted = $this->seedPlantRealRow($database);
+
+        $withReal = $this->entryRun('tools/seed.php next to real data', $seedCase(['--count=8', '--seed=7']));
+
+        eq(1, $withReal['exit'], 'tools/seed.php refuses a database that holds real rows');
+        ok(
+            'tools/seed.php says it found REAL data',
+            str_contains($withReal['stdout'] . $withReal['stderr'], 'REAL data')
+        );
+
+        /* -- --fresh ------------------------------------------------------- */
+
+        $fresh = $this->entryRun('tools/seed.php --fresh', $seedCase(['--count=8', '--days=10', '--seed=7', '--fresh']));
+
+        eq(0, $fresh['exit'], 'tools/seed.php --fresh runs even next to real rows');
+
+        $after = $this->seedDatabase($database);
+
+        ok('--fresh left the planted real user alone', $this->seedHasTelegramId($after, $planted['telegram_id']));
+        eq(
+            $planted['full_name'],
+            $this->seedRealName($after, $planted['telegram_id']),
+            '--fresh did not rewrite the real application'
+        );
+        eq(9, $this->seedCountUsers($after), '--fresh replaced the demo rows rather than adding to them');
+
+        /* -- determinism --------------------------------------------------- */
+
+        $repeat = $this->entryRun('tools/seed.php --fresh (same seed)', $seedCase(['--count=8', '--days=10', '--seed=7', '--fresh']));
+
+        eq(0, $repeat['exit'], 'a repeated run with the same seed exits 0');
+        eq(
+            $this->seedNames($this->seedDatabase($database)),
+            $names,
+            'the same --seed produces exactly the same applicants'
+        );
+
+        $different = $this->entryRun('tools/seed.php --fresh (different seed)', $seedCase(['--count=8', '--days=10', '--seed=8', '--fresh']));
+
+        eq(0, $different['exit'], 'a run with another seed exits 0');
+        ok(
+            'a different --seed produces different applicants',
+            $this->seedNames($this->seedDatabase($database)) !== $names
+        );
+    }
+
+    /* ---------------------------------------------------------------------
+     | Entry point plumbing
+     */
+
+    /**
+     * Run one entry point in its own process.
+     *
+     * A thin wrapper over panelRun(): these four files know nothing about the
+     * panel session, so the case starts from an empty one.
+     *
+     * @param array<string,mixed> $case
+     *
+     * @return array<string,mixed>
+     */
+    private function entryRun(string $label, array $case): array
+    {
+        return $this->panelRun($label, $this->entryCase($case));
+    }
+
+    /**
+     * The same defaults as entryRun(), for a case handed to panelRunGroup().
+     *
+     * @param array<string,mixed> $case
+     * @return array<string,mixed>
+     */
+    private function entryCase(array $case): array
+    {
+        return array_merge(['session' => [], 'csrf' => 'none'], $case);
+    }
+
+    /** The scratch directory the entry point suites write into. */
+    private function entryWorkspace(): string
+    {
+        $directory = $this->tmpDir . '/entry';
+
+        if (!is_dir($directory)) {
+            @mkdir($directory, 0775, true);
+        }
+
+        return $directory;
+    }
+
+    /**
+     * The "this file is not reachable over the web" guard of a CLI script.
+     *
+     * A running process cannot change its SAPI, so the guard is checked where
+     * it has to be correct: at the very top, before the script does anything
+     * that could have a side effect — bootstrap.php included.
+     */
+    private function entrySapiGuard(string $file, string $label): void
+    {
+        $source = (string) file_get_contents($file);
+        $guard = strpos($source, "PHP_SAPI !== 'cli'");
+        $boot = strpos($source, "bootstrap.php");
+
+        ok($label . ' refuses to run under a web SAPI', $guard !== false);
+        ok(
+            $label . ' checks the SAPI before it boots the application',
+            $guard !== false && ($boot === false || $guard < $boot)
+        );
+
+        if ($guard === false) {
+            return;
+        }
+
+        $block = substr($source, $guard, 700);
+
+        ok($label . ' answers 403 when it is reached over HTTP', str_contains($block, '403'));
+        ok($label . ' stops instead of continuing', preg_match('/exit\(\s*1\s*\)/', $block) === 1);
+    }
+
+    /**
+     * Assert that a file really is an Office Open XML workbook.
+     *
+     * Lighter than assertWorkbookIsValid(), which knows the shape of the
+     * harness's own two-row fixture: this one only cares that the container is
+     * a readable ZIP holding well-formed parts, which is what "the export
+     * produced a file Excel can open" actually means.
+     */
+    private function assertXlsxPackage(string $path, string $label): void
+    {
+        ok($label . ' exists', is_file($path));
+
+        if (!is_file($path)) {
+            return;
+        }
+
+        $bytes = (string) file_get_contents($path);
+
+        ok($label . ' starts with the ZIP magic bytes', str_starts_with($bytes, "PK\x03\x04"));
+        ok($label . ' is not an empty container (' . strlen($bytes) . ' bytes)', strlen($bytes) > 1000);
+
+        if (!class_exists('ZipArchive')) {
+            skip($label . ' opens with ZipArchive', 'ext-zip is not installed');
+
+            return;
+        }
+
+        $zip = new ZipArchive();
+        $opened = $zip->open($path);
+
+        if ($opened !== true) {
+            ok($label . ' opens with ZipArchive (code ' . (string) $opened . ')', false);
+
+            return;
+        }
+
+        ok($label . ' opens with ZipArchive', true);
+
+        $missing = [];
+        $malformed = [];
+
+        foreach ([
+            '[Content_Types].xml',
+            '_rels/.rels',
+            'docProps/app.xml',
+            'docProps/core.xml',
+            'xl/workbook.xml',
+            'xl/_rels/workbook.xml.rels',
+            'xl/styles.xml',
+            'xl/worksheets/sheet1.xml',
+        ] as $part) {
+            $content = $zip->getFromName($part);
+
+            if (!is_string($content) || $content === '') {
+                $missing[] = $part;
+
+                continue;
+            }
+
+            $previous = libxml_use_internal_errors(true);
+            $document = simplexml_load_string($content);
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
+
+            if ($document === false) {
+                $malformed[] = $part;
+            }
+        }
+
+        $sheet = (string) $zip->getFromName('xl/worksheets/sheet1.xml');
+        $zip->close();
+
+        eq([], $missing, $label . ' contains every mandatory package part');
+        eq([], $malformed, $label . ' contains only well-formed XML');
+        ok($label . ' has a header row', str_contains($sheet, '<row'));
+        ok($label . ' spans all 19 export columns (A1..S1)', str_contains($sheet, 'r="A1"') && str_contains($sheet, 'r="S1"'));
+        ok($label . ' carries data rows, not just the header', substr_count($sheet, '<row ') > 1);
+    }
+
+    /**
+     * Open the seeder's own database for inspection from this process.
+     *
+     * @return array<int,array<string,mixed>> the users table
+     */
+    private function seedDatabase(string $path): array
+    {
+        $db = new Database([
+            'driver' => 'sqlite',
+            'path'   => $path,
+            'prefix' => '',
+        ]);
+
+        return $db->fetchAll(
+            'SELECT u.telegram_id, u.first_name, r.full_name, r.source'
+            . ' FROM ' . $db->quoteIdent('users') . ' u'
+            . ' LEFT JOIN ' . $db->quoteIdent('registrations') . ' r ON r.telegram_id = u.telegram_id'
+            . ' ORDER BY u.telegram_id ASC'
+        );
+    }
+
+    /**
+     * The applicant names of the seeded rows, sorted — the fingerprint a fixed
+     * --seed has to reproduce exactly.
+     *
+     * @param array<int,array<string,mixed>> $rows
+     * @return string[]
+     */
+    private function seedNames(array $rows): array
+    {
+        $names = [];
+
+        foreach ($rows as $row) {
+            $telegramId = (int) ($row['telegram_id'] ?? 0);
+            $name = trim((string) ($row['full_name'] ?? ''));
+
+            if ($name !== '' && $telegramId >= 900000000 && $telegramId <= 900999999) {
+                $names[] = $name;
+            }
+        }
+
+        sort($names);
+
+        return $names;
+    }
+
+    /**
+     * How many rows the seeder created outside its own reserved id range.
+     *
+     * @param array<int,array<string,mixed>> $rows
+     */
+    private function seedOutsideReservedRange(array $rows): int
+    {
+        $outside = 0;
+
+        foreach ($rows as $row) {
+            if ((string) ($row['source'] ?? '') !== 'seed') {
+                continue;
+            }
+
+            $telegramId = (int) ($row['telegram_id'] ?? 0);
+
+            if ($telegramId < 900000000 || $telegramId > 900999999) {
+                $outside++;
+            }
+        }
+
+        return $outside;
+    }
+
+    /** @param array<int,array<string,mixed>> $rows */
+    private function seedHasTelegramId(array $rows, int $telegramId): bool
+    {
+        foreach ($rows as $row) {
+            if ((int) ($row['telegram_id'] ?? 0) === $telegramId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<int,array<string,mixed>> $rows */
+    private function seedRealName(array $rows, int $telegramId): string
+    {
+        foreach ($rows as $row) {
+            if ((int) ($row['telegram_id'] ?? 0) === $telegramId) {
+                return (string) ($row['full_name'] ?? '');
+            }
+        }
+
+        return '';
+    }
+
+    /** @param array<int,array<string,mixed>> $rows */
+    private function seedCountUsers(array $rows): int
+    {
+        $ids = [];
+
+        foreach ($rows as $row) {
+            $ids[(int) ($row['telegram_id'] ?? 0)] = true;
+        }
+
+        return count($ids);
+    }
+
+    /**
+     * Plant a row the seeder must recognise as real and never touch.
+     *
+     * @return array{telegram_id:int,full_name:string}
+     */
+    private function seedPlantRealRow(string $path): array
+    {
+        $db = new Database([
+            'driver' => 'sqlite',
+            'path'   => $path,
+            'prefix' => '',
+        ]);
+
+        $telegramId = 4242424242;
+        $fullName = 'Haqiqiy Foydalanuvchi';
+        $now = App::now();
+
+        $db->insert('users', [
+            'telegram_id' => $telegramId,
+            'username'    => 'haqiqiy',
+            'first_name'  => 'Haqiqiy',
+            'last_name'   => 'Foydalanuvchi',
+            'locale'      => 'uz',
+            'state'       => 'idle',
+            'state_data'  => null,
+            'is_admin'    => 0,
+            'is_blocked'  => 0,
+            'last_seen_at' => $now,
+            'created_at'  => $now,
+            'updated_at'  => $now,
+        ]);
+
+        $db->insert('registrations', [
+            'user_id'         => 0,
+            'telegram_id'     => $telegramId,
+            'full_name'       => $fullName,
+            'phone'           => '+998901112233',
+            'birth_year'      => 2001,
+            'district'        => 'asaka',
+            'directions'      => '["web"]',
+            'direction_other' => null,
+            'portfolio'       => null,
+            'portfolio_links' => null,
+            'status'          => 'approved',
+            'admin_note'      => null,
+            'reviewed_by'     => null,
+            'reviewed_at'     => null,
+            'source'          => 'bot',
+            'created_at'      => $now,
+            'updated_at'      => $now,
+        ]);
+
+        return ['telegram_id' => $telegramId, 'full_name' => $fullName];
+    }
+
     /* ---------------------------------------------------------------------
      | The collector that decides the verdict
      */
@@ -4647,11 +5818,83 @@ final class TestSuites
      *
      * @return array{
      *     output:string, status:int, session:array<string,mixed>, calls:string[],
-     *     diagnostics:string[], pages:array<int,array<string,mixed>>, stdout:string,
-     *     stderr:string, exit:int, fatal:?string
+     *     diagnostics:string[], pages:array<int,array<string,mixed>>,
+     *     flush:array<int,array<string,mixed>>, stdout:string, stderr:string,
+     *     exit:int, fatal:?string
      * }
      */
     private function panelRun(string $label, array $case): array
+    {
+        $prepared = $this->panelPrepare($label, $case);
+
+        if ($prepared === null) {
+            return self::panelEmptyResult();
+        }
+
+        $handle = $this->panelStart($prepared);
+
+        if ($handle === null) {
+            return self::panelEmptyResult();
+        }
+
+        return $this->panelCollect($prepared, $handle);
+    }
+
+    /**
+     * Run several independent cases at the same time, one child process each.
+     *
+     * Reserved for cases that cannot observe one another: a 403 page that never
+     * reaches the database, a refused webhook, `cli.php help`. Those happen to
+     * be exactly the slow ones — setup.php deliberately sleeps a quarter of a
+     * second before refusing a wrong key — so running them side by side turns
+     * the most expensive part of the entry-point coverage into the cheapest,
+     * without dropping a single case. Anything with a side effect (a database
+     * write, a file the next case reads) goes through panelRun() instead, one
+     * at a time, so the order of the run stays exactly reproducible.
+     *
+     * @param array<string,array<string,mixed>> $cases label => case
+     *
+     * @return array<string,array<string,mixed>> label => result, in input order
+     */
+    private function panelRunGroup(array $cases): array
+    {
+        $started = [];
+
+        foreach ($cases as $label => $case) {
+            $prepared = $this->panelPrepare((string) $label, $case);
+            $handle = $prepared === null ? null : $this->panelStart($prepared);
+
+            $started[(string) $label] = $handle === null ? null : [$prepared, $handle];
+        }
+
+        $results = [];
+
+        foreach ($started as $label => $entry) {
+            $results[$label] = $entry === null
+                ? self::panelEmptyResult()
+                : $this->panelCollect($entry[0], $entry[1]);
+        }
+
+        return $results;
+    }
+
+    /** The result shape returned when a child could not be run at all. */
+    private static function panelEmptyResult(): array
+    {
+        return [
+            'output' => '', 'status' => 0, 'session' => [], 'calls' => [], 'diagnostics' => [],
+            'pages' => [], 'flush' => [], 'stdout' => '', 'stderr' => '', 'exit' => -1, 'fatal' => null,
+        ];
+    }
+
+    /**
+     * Write the case (and any request body) to tests/tmp and describe the run.
+     *
+     * @param array<string,mixed> $case
+     *
+     * @return ?array{label:string,case:array<string,mixed>,file:string,result:string}
+     */
+    private function panelPrepare(string $label, array $case): ?array
     {
         $this->panelRequests++;
         $this->panelCaseNumber++;
@@ -4686,31 +5929,78 @@ final class TestSuites
             ]
         );
 
-        $empty = [
-            'output' => '', 'status' => 0, 'session' => [], 'calls' => [], 'diagnostics' => [],
-            'pages' => [], 'stdout' => '', 'stderr' => '', 'exit' => -1, 'fatal' => null,
-        ];
+        // Raw request bodies travel as files: they may be binary, invalid UTF-8
+        // or two megabytes long, none of which belongs in the case JSON.
+        if (isset($case['bodies']) && is_array($case['bodies'])) {
+            $bodies = [];
+
+            foreach ($case['bodies'] as $index => $payload) {
+                $bodyFile = $directory . '/body-' . $this->panelCaseNumber . '-' . count($bodies) . '.bin';
+                file_put_contents($bodyFile, (string) $payload);
+
+                $bodies[] = ['label' => (string) $index, 'file' => $bodyFile];
+            }
+
+            $case['bodies'] = $bodies;
+        }
+
+        if (array_key_exists('body', $case)) {
+            $bodyFile = $directory . '/body-' . $this->panelCaseNumber . '.bin';
+            file_put_contents($bodyFile, (string) $case['body']);
+
+            $case['body_file'] = $bodyFile;
+            unset($case['body']);
+        }
 
         $encoded = json_encode($case, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         if (!is_string($encoded) || @file_put_contents($caseFile, $encoded) === false) {
             ok($label . ': the case could be handed to a child process', false);
 
-            return $empty;
+            return null;
         }
 
+        return ['label' => $label, 'case' => $case, 'file' => $caseFile, 'result' => $resultFile];
+    }
+
+    /**
+     * Start the child process of a prepared case.
+     *
+     * @param array{label:string,case:array<string,mixed>,file:string,result:string} $prepared
+     *
+     * @return ?array{0:resource,1:array<int,resource>}
+     */
+    private function panelStart(array $prepared): ?array
+    {
         $pipes = [];
         $process = @proc_open(
-            [PHP_BINARY, $this->panelWorker(), $caseFile],
+            [PHP_BINARY, $this->panelWorker(), $prepared['file']],
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes
         );
 
         if (!is_resource($process)) {
-            ok($label . ': a child process could be started', false);
+            ok($prepared['label'] . ': a child process could be started', false);
 
-            return $empty;
+            return null;
         }
+
+        return [$process, $pipes];
+    }
+
+    /**
+     * Wait for one child, read its report and run the assertions every case owes.
+     *
+     * @param array{label:string,case:array<string,mixed>,file:string,result:string} $prepared
+     * @param array{0:resource,1:array<int,resource>} $handle
+     *
+     * @return array<string,mixed>
+     */
+    private function panelCollect(array $prepared, array $handle): array
+    {
+        $label = $prepared['label'];
+        $case = $prepared['case'];
+        [$process, $pipes] = $handle;
 
         $stdout = (string) stream_get_contents($pipes[1]);
         fclose($pipes[1]);
@@ -4718,7 +6008,7 @@ final class TestSuites
         fclose($pipes[2]);
         $exit = proc_close($process);
 
-        $raw = is_file($resultFile) ? (string) file_get_contents($resultFile) : '';
+        $raw = is_file($prepared['result']) ? (string) file_get_contents($prepared['result']) : '';
         $report = $raw === '' ? null : json_decode($raw, true);
 
         if (!is_array($report)) {
@@ -4728,7 +6018,11 @@ final class TestSuites
                 false
             );
 
-            return array_merge($empty, ['stdout' => $stdout, 'stderr' => $stderr, 'exit' => $exit]);
+            return array_merge(self::panelEmptyResult(), [
+                'stdout' => $stdout,
+                'stderr' => $stderr,
+                'exit'   => $exit,
+            ]);
         }
 
         $result = [
@@ -4738,6 +6032,7 @@ final class TestSuites
             'calls'       => array_map('strval', (array) ($report['calls'] ?? [])),
             'diagnostics' => array_map('strval', (array) ($report['diagnostics'] ?? [])),
             'pages'       => [],
+            'flush'       => is_array($report['flush'] ?? null) ? $report['flush'] : [],
             'stdout'      => $stdout,
             'stderr'      => $stderr,
             'exit'        => $exit,
@@ -4750,10 +6045,11 @@ final class TestSuites
             }
 
             $result['pages'][] = [
-                'label' => (string) ($page['label'] ?? ''),
-                'html'  => (string) base64_decode((string) ($page['html'] ?? ''), true),
-                'code'  => (int) ($page['code'] ?? 0),
-                'error' => isset($page['error']) && is_string($page['error']) ? $page['error'] : null,
+                'label'       => (string) ($page['label'] ?? ''),
+                'html'        => (string) base64_decode((string) ($page['html'] ?? ''), true),
+                'code'        => (int) ($page['code'] ?? 0),
+                'error'       => isset($page['error']) && is_string($page['error']) ? $page['error'] : null,
+                'diagnostics' => array_map('strval', (array) ($page['diagnostics'] ?? [])),
             ];
         }
 
@@ -4872,6 +6168,7 @@ $report = [
     'session'     => [],
     'calls'       => [],
     'pages'       => [],
+    'flush'       => [],
     'curl'        => false,
     'fatal'       => null,
 ];
@@ -4922,6 +6219,12 @@ register_shutdown_function(static function () use (&$report, $case): void {
         }
     }
 
+    $probe = $GLOBALS['PANEL_PROBE'] ?? null;
+
+    if ($probe instanceof HarnessProbeTransport) {
+        $report['flush'] = $probe->observations;
+    }
+
     $fatal = error_get_last();
 
     if ($fatal !== null && in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
@@ -4937,6 +6240,93 @@ register_shutdown_function(static function () use (&$report, $case): void {
     );
 });
 
+/**
+ * Feeds `php://input` to an entry point that reads the raw request body.
+ *
+ * The CLI SAPI leaves php://input permanently empty — stdin is php://stdin and
+ * nothing else — so index.php could otherwise never be handed a webhook body.
+ * The wrapper is registered around the dispatch only and torn down afterwards.
+ */
+final class HarnessInputStream
+{
+    public static string $body = '';
+
+    /** @var resource|null set by the streams layer */
+    public $context = null;
+
+    private int $position = 0;
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$openedPath): bool
+    {
+        $this->position = 0;
+
+        return strtolower($path) === 'php://input';
+    }
+
+    public function stream_read(int $count): string
+    {
+        $chunk = substr(self::$body, $this->position, max(0, $count));
+        $this->position += strlen($chunk);
+
+        return $chunk;
+    }
+
+    public function stream_write(string $data): int
+    {
+        return 0;
+    }
+
+    public function stream_eof(): bool
+    {
+        return $this->position >= strlen(self::$body);
+    }
+
+    public function stream_tell(): int
+    {
+        return $this->position;
+    }
+
+    public function stream_seek(int $offset, int $whence = SEEK_SET): bool
+    {
+        $size = strlen(self::$body);
+
+        $target = match ($whence) {
+            SEEK_CUR => $this->position + $offset,
+            SEEK_END => $size + $offset,
+            default  => $offset,
+        };
+
+        if ($target < 0) {
+            return false;
+        }
+
+        $this->position = $target;
+
+        return true;
+    }
+
+    /** @return array<string,int> */
+    public function stream_stat(): array
+    {
+        return ['size' => strlen(self::$body), 'mode' => 0100444];
+    }
+
+    public function stream_close(): void
+    {
+    }
+
+    public function stream_set_option(int $option, int $arg1, int $arg2): bool
+    {
+        return false;
+    }
+
+    /** @return array<string,int> */
+    public function url_stat(string $path, int $flags): array
+    {
+        return ['size' => strlen(self::$body), 'mode' => 0100444];
+    }
+}
+
 $GLOBALS['AITALENTS_CONFIG'] = require (string) $case['config'];
 
 // The empty-database pass runs against a database of its own.
@@ -4944,8 +6334,52 @@ if (isset($case['database']) && is_string($case['database']) && $case['database'
     $GLOBALS['AITALENTS_CONFIG']['database']['path'] = $case['database'];
 }
 
+// Per-case configuration, written in dot notation: 'telegram.webhook_secret'.
+foreach ((array) ($case['config_set'] ?? []) as $path => $value) {
+    $segments = explode('.', (string) $path);
+    $cursor = &$GLOBALS['AITALENTS_CONFIG'];
+
+    foreach ($segments as $segment) {
+        if (!isset($cursor[$segment]) || !is_array($cursor[$segment])) {
+            $cursor[$segment] = [];
+        }
+
+        $cursor = &$cursor[$segment];
+    }
+
+    $cursor = $value;
+    unset($cursor);
+}
+
 /** @var \AiTalents\App $app */
 $app = require ((string) $case['root']) . '/bootstrap.php';
+
+// Declared here and not at the top of the file: it implements an interface the
+// autoloader only knows about once bootstrap.php has registered it.
+/**
+ * Records the output state at the moment the bot first talks to Telegram.
+ *
+ * index.php promises to answer Telegram BEFORE it dispatches; the only honest
+ * way to check that is to look at headers_sent()/ob_get_level() from inside the
+ * dispatch, and the transport is the one place the dispatch always reaches.
+ */
+final class HarnessProbeTransport implements \AiTalents\Telegram\Transport
+{
+    /** @var array<int,array{headers_sent:bool,ob_level:int}> */
+    public array $observations = [];
+
+    public function __construct(private \AiTalents\Telegram\FakeTransport $inner)
+    {
+    }
+
+    public function send(string $url, array $params, int $timeout): string
+    {
+        $this->observations[] = ['headers_sent' => headers_sent(), 'ob_level' => ob_get_level()];
+
+        return $this->inner->send($url, $params, $timeout);
+    }
+}
+
 
 /* Nothing leaves the machine: the same guarantee the parent process gives. */
 $fake = new \AiTalents\Telegram\FakeTransport();
@@ -4955,11 +6389,18 @@ foreach ((array) ($case['queue'] ?? []) as $response) {
     $fake->pushRaw((string) $response);
 }
 
+$transport = $fake;
+
+if (!empty($case['flush_probe'])) {
+    $transport = new HarnessProbeTransport($fake);
+    $GLOBALS['PANEL_PROBE'] = $transport;
+}
+
 $app->setApi(new \AiTalents\Telegram\Api(
     token: (string) $app->config('telegram.token', ''),
     logger: $app->logger(),
     timeout: (int) $app->config('telegram.timeout', 5),
-    transport: $fake,
+    transport: $transport,
     apiBase: (string) $app->config('telegram.api_base', '')
 ));
 
@@ -5061,6 +6502,96 @@ if (empty($case['sent'])) {
 } else {
     echo ' ';
     flush();
+}
+
+/*
+ * The four entry points outside the panel boot the application themselves, own
+ * their own output and end in exit(), so they are required straight from here:
+ * whatever they print lands on this process's real stdout, which the harness
+ * reads through the pipe, and the report is written from the shutdown function.
+ */
+$entry = (string) ($case['entry'] ?? 'panel');
+
+if ($entry !== 'panel') {
+    $argv = ['aitalents'];
+
+    foreach ((array) ($case['argv'] ?? []) as $argument) {
+        $argv[] = (string) $argument;
+    }
+
+    $_SERVER['argv'] = $argv;
+    $_SERVER['argc'] = count($argv);
+
+    $script = match ($entry) {
+        'webhook' => '/index.php',
+        'setup'   => '/setup.php',
+        'cli'     => '/cli.php',
+        'seed'    => '/tools/seed.php',
+        default   => '',
+    };
+
+    if ($script === '') {
+        fwrite(STDERR, 'panel worker: unknown entry "' . $entry . '"' . "\n");
+        exit(3);
+    }
+
+    if ($entry === 'webhook') {
+        // php://input is empty for the whole life of a CLI process, so the
+        // webhook body is served by a stream wrapper instead. It is registered
+        // for the dispatch only; the shutdown hook puts the real php:// back
+        // even when the entry point ends in exit().
+        $bodyFile = (string) ($case['body_file'] ?? '');
+        HarnessInputStream::$body = $bodyFile !== '' && is_file($bodyFile)
+            ? (string) file_get_contents($bodyFile)
+            : '';
+
+        register_shutdown_function(static function (): void {
+            @stream_wrapper_restore('php');
+        });
+
+        stream_wrapper_unregister('php');
+        stream_wrapper_register('php', HarnessInputStream::class);
+
+        /*
+         * A POST that passes the secret gate is the one webhook path that does
+         * NOT end in exit(): index.php answers, flushes and then falls through.
+         * That makes it safe to feed a whole list of bodies to one process,
+         * which is what keeps the sixteen malformed-body cases from costing
+         * sixteen interpreter starts. Each body's own diagnostics are sliced
+         * out, so attribution survives the batching.
+         */
+        if (isset($case['bodies']) && is_array($case['bodies'])) {
+            foreach ($case['bodies'] as $bodyCase) {
+                if (!is_array($bodyCase)) {
+                    continue;
+                }
+
+                $file = (string) ($bodyCase['file'] ?? '');
+                HarnessInputStream::$body = $file !== '' && is_file($file)
+                    ? (string) file_get_contents($file)
+                    : '';
+
+                $seen = count($report['diagnostics']);
+
+                require ((string) $case['root']) . '/index.php';
+
+                $report['pages'][] = [
+                    'label'       => (string) ($bodyCase['label'] ?? ''),
+                    'html'        => '',
+                    'code'        => (int) (http_response_code() ?: 0),
+                    'error'       => null,
+                    'diagnostics' => array_values(array_slice($report['diagnostics'], $seen)),
+                ];
+            }
+
+            exit(0);
+        }
+    }
+
+    require ((string) $case['root']) . $script;
+
+    // index.php falls through after dispatching; everything else has exited.
+    exit(0);
 }
 
 ob_start();
@@ -5483,10 +7014,11 @@ ok(
  *
  * The admin-panel suites now render every page and run every controller action
  * — in this process for the requests that return, and in a child process for
- * the ones that end in exit() — and every diagnostic either half raises ends
- * up in the very same list. The guard below refuses to call the run green if
- * the panel was not exercised at all, so the coverage cannot quietly vanish
- * again.
+ * the ones that end in exit() — and the four entry points outside the panel
+ * (index.php, setup.php, cli.php, tools/seed.php) are booted as themselves in
+ * a child process too. Every diagnostic any of them raises ends up in the very
+ * same list. The guard below refuses to call the run green if that coverage
+ * was not exercised at all, so it cannot quietly vanish again.
  */
 suite('PHP diagnostics');
 $diagnostics = TestRunner::instance()->diagnostics();
@@ -5502,8 +7034,9 @@ if ($diagnostics === []) {
 $panelRequests = $suites->panelRequests();
 
 ok(
-    'the verdict covers the admin panel as well as the bot (' . $panelRequests . ' panel requests)',
-    $panelRequests > 100
+    'the verdict covers the panel and the entry points, not only the bot ('
+    . $panelRequests . ' requests driven)',
+    $panelRequests > 200
 );
 
 restore_error_handler();
