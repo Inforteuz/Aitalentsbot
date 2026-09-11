@@ -98,6 +98,19 @@ if (!function_exists('aitalents_boot_fail')) {
 
 error_reporting(E_ALL);
 
+/*
+ * Report everything, but never render it. A PHP notice printed into a webhook
+ * response or a panel page leaks absolute paths and, worse, breaks the JSON and
+ * redirect responses the panel relies on. The CLI keeps its output so that
+ * cli.php and tools/seed.php stay debuggable in a terminal.
+ */
+if (PHP_SAPI !== 'cli') {
+    @ini_set('display_errors', '0');
+    @ini_set('display_startup_errors', '0');
+}
+
+@ini_set('log_errors', '1');
+
 if (function_exists('mb_internal_encoding')) {
     mb_internal_encoding('UTF-8');
 }

@@ -752,7 +752,12 @@ final class RegistrationRepository
             return null;
         }
 
-        if (preg_match('/(-?\d{4,})/', $actor, $m) === 1) {
+        // Only a Telegram actor has a Telegram id. Digging digits out of any
+        // label would invent one: a panel operator called "admin2024" would be
+        // stored as reviewed_by = 2024, which is somebody else's account.
+        // A panel decision leaves reviewed_by null; who made it is recorded in
+        // audit_log, which the registration detail page renders.
+        if (preg_match('/^tg:(-?\d+)$/', trim($actor), $m) === 1) {
             return (int) $m[1];
         }
 

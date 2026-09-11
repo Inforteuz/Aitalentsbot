@@ -98,7 +98,7 @@ AddDefaultCharset UTF-8
 
     # UZ: Yopiq papkalarga har qanday murojaat 403 bilan qaytariladi.
     # EN: Any request that walks into one of these directories is forbidden.
-    RewriteRule ^(?:.*/)?(src|lang|data|tests|docs|exports)(/|$) - [F,L]
+    RewriteRule ^(?:.*/)?(src|lang|data|tests|docs|exports|tools|admin/views)(/|$) - [F,L]
 
     # UZ: .git, .svn kabi yashirin papkalar (ACME sertifikat papkasidan tashqari).
     # EN: Hidden directories such as .git and .svn (.well-known stays reachable).

@@ -479,10 +479,19 @@ final class Auth
             return true;
         }
 
-        // Only meaningful behind a proxy the deployment chose to trust.
+        // A configured base_url is the deployment's own statement about how the
+        // panel is reached, and it cannot be spoofed by a request header.
+        $baseUrl = strtolower(trim((string) $this->app->config('app.base_url', '')));
+
+        if (str_starts_with($baseUrl, 'https://')) {
+            return true;
+        }
+
+        // X-Forwarded-Proto is only meaningful behind a proxy the deployment
+        // chose to trust; otherwise any client could claim to be on HTTPS.
         $proto = strtolower(trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
 
-        return $proto === 'https' && Request::ip() !== (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        return $proto === 'https' && Request::trustProxy();
     }
 
     /* --------------------------------------------------------------------

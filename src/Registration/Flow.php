@@ -139,6 +139,15 @@ final class Flow
         $sequence = $this->sequence();
         $first    = $sequence[0] ?? Step::Confirm;
 
+        // The language question is not part of the questionnaire (it collects no
+        // application data and carries no progress number), so it is not in
+        // sequence() — it is a pre-step, asked only when the deployment runs more
+        // than one locale and app.ask_language is on. Answering it advances to
+        // sequence()[0], which is what nextStep(Step::Language) returns.
+        if ($this->asksLanguage()) {
+            $first = Step::Language;
+        }
+
         $this->app->users()->setState($telegramId, $first->stateKey(), $data);
         $this->send($telegramId, Lang::t('reg.intro', $locale));
         $this->render($user, $first);
@@ -1967,6 +1976,21 @@ final class Flow
         }
 
         return $list;
+    }
+
+    /**
+     * True when the registration should open with the language picker.
+     *
+     * Pointless with a single configured locale, and switched off entirely by
+     * the app.ask_language setting (which the admin panel can toggle at runtime).
+     */
+    private function asksLanguage(): bool
+    {
+        if (count($this->app->locales()) < 2) {
+            return false;
+        }
+
+        return (bool) $this->app->setting('ask_language', true);
     }
 
     /** "2/6" for the steps that are part of the questionnaire, "" for the rest. */

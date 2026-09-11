@@ -51,11 +51,22 @@ return [
         // UZ: Bot foydalanuvchi nomi, @ belgisisiz. EN: Bot username, without the leading @.
         'bot_username'    => '',        // without @
 
-        // UZ: Webhook maxfiy so'zi — Telegram uni har so'rovda sarlavhada yuboradi;
-        //     bo'sh qoldirmang, tasodifiy 32+ belgili satr yozing.
-        // EN: Secret compared against the X-Telegram-Bot-Api-Secret-Token header;
-        //     use a random 32+ character string, never leave it empty in production.
+        // UZ: Webhook maxfiy so'zi — Telegram uni har so'rovda sarlavhada yuboradi.
+        //     BU MAJBURIY: bo'sh bo'lsa bot hech qanday yangilanishni qabul qilmaydi
+        //     (aks holda URL'ni topgan har kim o'zini admin qilib ko'rsata oladi).
+        //     `setup.php` sahifasi tasodifiy qiymat yaratib beradi, yoki o'zingiz:
+        //     php -r "echo bin2hex(random_bytes(24));"
+        // EN: Secret compared against the X-Telegram-Bot-Api-Secret-Token header.
+        //     REQUIRED: while this is empty the webhook refuses every update, because
+        //     anyone who guessed the URL could otherwise forge an admin. setup.php
+        //     generates one, or: php -r "echo bin2hex(random_bytes(24));"
         'webhook_secret'  => '',        // X-Telegram-Bot-Api-Secret-Token value
+
+        // UZ: Faqat lokal ishlab chiqish uchun — maxfiy so'zsiz webhook'ga ruxsat beradi.
+        //     Ishlab turgan serverda hech qachon true qilmang.
+        // EN: Local development escape hatch: accept updates without a secret.
+        //     Never set this to true on a live server.
+        'allow_insecure_webhook' => false,
 
         // UZ: Bot administratorlarining Telegram ID raqamlari (@userinfobot beradi).
         // EN: Telegram user ids allowed to use the in-bot admin commands.
@@ -116,6 +127,16 @@ return [
         //     Papka yozuvga ruxsatli bo'lsin (chmod 755, fayl 644).
         // EN: SQLite file location; only used when driver is 'sqlite'. The data/
         //     directory must be writable by PHP.
+        // UZ: XAVFSIZLIK — bu fayl hujjat ildizida turadi va .htaccess ishlamaydigan
+        //     hostingda yuklab olinishi mumkin (ichida hamma telefon raqami bor!).
+        //     Ikki tavsiya: (1) nomga tasodifiy qism qo'shing, masalan
+        //     '/data/aitalents-7f3a91c4.sqlite'; (2) imkon bo'lsa faylni umuman
+        //     hujjat ildizidan tashqariga oling:
+        //     dirname(__DIR__) . '/aitalents-data/aitalents.sqlite'
+        // EN: SECURITY — this file sits inside the document root and is
+        //     downloadable on any host that ignores .htaccess, exposing every
+        //     applicant's phone number. Either add a random suffix to the name,
+        //     or better, move it outside the document root as shown above.
         'path'     => __DIR__ . '/data/aitalents.sqlite',
     ],
 

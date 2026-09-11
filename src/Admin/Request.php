@@ -276,7 +276,7 @@ final class Request
     /**
      * Whether a reverse proxy in front of the panel may dictate the client IP.
      */
-    private static function trustProxy(): bool
+    public static function trustProxy(): bool
     {
         foreach (self::TRUST_PROXY_KEYS as $key) {
             if (!isset($_SERVER[$key])) {
