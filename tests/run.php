@@ -2448,9 +2448,28 @@ final class TestSuites
 
         ok('the phone step offers a request_contact button', $asksForContact);
 
+        // A typed number proves nothing about who owns it, so with
+        // app.require_own_phone on it is refused however well-formed it is.
+        $router->dispatch($this->message($applicant, '+998 95 000 00 00'));
+        eq(Step::Phone->stateKey(), $users->state($applicant), 'a typed phone number is refused');
+        ok(
+            'refusing a typed number explains that the button must be used',
+            str_contains(
+                (string) ($this->fake->callsOf('sendMessage')[count($this->fake->callsOf('sendMessage')) - 2]['params']['text'] ?? ''),
+                'Raqamni yuborish'
+            )
+        );
+        eq(null, $users->stateData($applicant)['phone'] ?? null, 'the typed number was not stored');
+
         // A contact that belongs to somebody else is refused.
         $router->dispatch($this->contactMessage($applicant, '+998911112233', 4242));
         eq(Step::Phone->stateKey(), $users->state($applicant), 'a foreign contact card is refused');
+
+        // A card shared from the address book carries no user_id, so it is not
+        // proof of the sender's own number either.
+        $router->dispatch($this->contactMessage($applicant, '+998911112233', null, false));
+        eq(Step::Phone->stateKey(), $users->state($applicant), 'an address-book card without a user_id is refused');
+        eq(null, $users->stateData($applicant)['phone'] ?? null, 'no unverified number reached state_data');
 
         $router->dispatch($this->contactMessage($applicant, '+998 90 123 45 67', $applicant));
         eq(Step::BirthYear->stateKey(), $users->state($applicant), 'a shared contact moves on to the birth year');
@@ -6741,8 +6760,27 @@ WORKER;
     }
 
     /** A private message carrying a shared contact card. */
-    private function contactMessage(int $telegramId, string $phone, ?int $owner = null): Update
-    {
+    /**
+     * A shared contact card.
+     *
+     * `$withUserId = false` models a card picked out of the address book: Telegram
+     * omits `user_id` there, so the card says nothing about who sent it.
+     */
+    private function contactMessage(
+        int $telegramId,
+        string $phone,
+        ?int $owner = null,
+        bool $withUserId = true
+    ): Update {
+        $contact = [
+            'phone_number' => $phone,
+            'first_name' => 'Ali',
+        ];
+
+        if ($withUserId) {
+            $contact['user_id'] = $owner ?? $telegramId;
+        }
+
         return new Update([
             'update_id' => ++$this->updateId,
             'message' => [
@@ -6750,11 +6788,7 @@ WORKER;
                 'from' => $this->sender($telegramId),
                 'chat' => ['id' => $telegramId, 'type' => 'private'],
                 'date' => time(),
-                'contact' => [
-                    'phone_number' => $phone,
-                    'first_name' => 'Ali',
-                    'user_id' => $owner ?? $telegramId,
-                ],
+                'contact' => $contact,
             ],
         ]);
     }

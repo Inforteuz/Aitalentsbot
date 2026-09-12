@@ -752,17 +752,31 @@ final class Flow
         $locale     = $this->locale($user);
         $contact    = $u->contact();
 
+        // Telegram vouches for a number shared through the contact button: it
+        // belongs to the account that pressed it. A typed number is just text —
+        // nobody can tell whose it is — so when the programme needs a reachable
+        // applicant, the button is the only accepted answer.
+        $requireOwn = (bool) $this->app->setting('require_own_phone', true);
+
         if ($contact !== null) {
             $owner = $u->contactUserId();
 
-            // A contact card of somebody else is not proof of this user's number.
-            if ($owner !== null && $owner !== $telegramId) {
+            // A card without a user_id comes from the address book, not from the
+            // sender's account, so it proves nothing either.
+            $isOwn = $owner !== null && $owner === $telegramId;
+
+            if ($requireOwn ? !$isOwn : ($owner !== null && $owner !== $telegramId)) {
                 $this->send($telegramId, Lang::t('reg.err_phone_foreign_contact', $locale));
+                $this->render($user, Step::Phone);
 
                 return true;
             }
 
             $answer = (string) ($u->contactPhone() ?? '');
+        } elseif ($requireOwn) {
+            $this->rejectAnswer($user, Step::Phone, 'reg.err_phone_must_share');
+
+            return true;
         }
 
         $result = Validator::phone($answer);
@@ -1640,7 +1654,11 @@ final class Flow
         $navigation[] = Lang::t('btn.cancel', $locale);
         $rows[]       = $navigation;
 
-        return Keyboard::reply($rows, true, false, Lang::t('btn.type_phone', $locale));
+        $placeholder = (bool) $this->app->setting('require_own_phone', true)
+            ? Lang::t('btn.share_phone', $locale)
+            : Lang::t('btn.type_phone', $locale);
+
+        return Keyboard::reply($rows, true, false, $placeholder);
     }
 
     /**

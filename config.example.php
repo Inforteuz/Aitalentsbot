@@ -179,6 +179,17 @@ return [
         // EN: Allow a user to edit their own submitted registration.
         'allow_edit'        => true,    // user may edit own registration
 
+        // UZ: true bo'lsa, telefon raqami FAQAT «Raqamni yuborish» tugmasi orqali
+        //     qabul qilinadi. Telegram bunday raqam aynan shu akkauntga tegishli
+        //     ekanini kafolatlaydi; qo'lda yozilgan raqamni esa hech kim tekshira
+        //     olmaydi (istalgan begona yoki soxta raqam yozib ketish mumkin).
+        //     false qilsangiz, qo'lda kiritishga ham ruxsat beriladi.
+        // EN: When true the phone step accepts ONLY a contact shared through the
+        //     button, which Telegram guarantees belongs to that account. A typed
+        //     number is unverifiable — anyone can enter a stranger's or a fake
+        //     one. Set false to also allow manual entry.
+        'require_own_phone' => true,
+
         // UZ: Ixtiyoriy qadamlar. F.I.Sh., telefon va yo'nalish har doim so'raladi.
         // EN: Optional steps; full name, phone and direction are always asked.
         'steps'             => [        // optional steps toggles (full_name/phone/direction are always on)
