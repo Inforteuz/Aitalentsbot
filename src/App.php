@@ -280,6 +280,44 @@ final class App
     /**
      * Current local timestamp in the storage format used everywhere.
      */
+    /**
+     * A private directory for a file that is about to be sent and then deleted.
+     *
+     * `data/exports/` is preferred, because it keeps the file inside the project
+     * where the .htaccess rules already deny it. Shared hosting being what it is,
+     * that directory is not always writable — the system temp directory is the
+     * fallback, and only when both fail does this give up.
+     */
+    public function temporaryDirectory(string $prefix = 'export'): string
+    {
+        $root = defined('AITALENTS_ROOT') ? (string) AITALENTS_ROOT : dirname(__DIR__);
+        $name = $prefix . '-' . bin2hex(random_bytes(6));
+
+        $candidates = [
+            $root . '/data/exports/' . $name,
+            rtrim(sys_get_temp_dir(), '/\\') . '/aitalents-' . $name,
+        ];
+
+        $problems = [];
+
+        foreach ($candidates as $directory) {
+            if (is_dir($directory) && is_writable($directory)) {
+                return $directory;
+            }
+
+            if (@mkdir($directory, 0775, true) && is_dir($directory) && is_writable($directory)) {
+                return $directory;
+            }
+
+            $problems[] = $directory;
+        }
+
+        throw new \RuntimeException(
+            'No writable directory for the export. Tried: ' . implode(', ', $problems)
+            . '. Give data/exports/ write permission (chmod 775).'
+        );
+    }
+
     public static function now(): string
     {
         return date('Y-m-d H:i:s');

@@ -11,6 +11,7 @@ use AiTalents\Lang;
 use AiTalents\Registration\Catalog;
 use AiTalents\Registration\Flow;
 use AiTalents\Telegram\Keyboard;
+use AiTalents\Telegram\CurlTransport;
 use AiTalents\Telegram\Update;
 use AiTalents\Text;
 
@@ -455,6 +456,17 @@ final class CommandHandler
             return;
         }
 
+        // Telegram only accepts an uploaded document over a multipart request,
+        // which needs cURL. Saying so plainly beats a generic failure, because
+        // only the host can switch the extension back on.
+        if (!CurlTransport::supportsUploads()) {
+            $this->app->logger()->warning('XLSX export skipped: uploads need the curl extension');
+
+            $this->reply($user, Lang::t('admin.export_no_upload', $locale));
+
+            return;
+        }
+
         $this->reply($user, Lang::t('admin.export_preparing', $locale));
         $this->app->api()->sendChatAction($chatId, 'upload_document');
 
@@ -484,7 +496,7 @@ final class CommandHandler
                 'telegram_id' => $chatId,
             ]);
 
-            $this->reply($user, Lang::t('error.file', $locale));
+            $this->reply($user, Lang::t('admin.export_failed', $locale, ['reason' => $e->getMessage()]));
         } finally {
             $this->cleanTemporary($directory, $path);
         }
@@ -763,14 +775,10 @@ final class CommandHandler
      */
     private function temporaryDirectory(): string
     {
-        $root = defined('AITALENTS_ROOT') ? (string) AITALENTS_ROOT : dirname(__DIR__, 2);
-        $directory = $root . '/data/exports/' . bin2hex(random_bytes(6));
-
-        if (!is_dir($directory) && !mkdir($directory, 0775, true) && !is_dir($directory)) {
-            throw new \RuntimeException('Could not create the export directory ' . $directory . '.');
-        }
-
-        return $directory;
+        // App picks data/exports/ when it is writable and the system temp
+        // directory when it is not, so a permissions slip on the host does not
+        // make the export impossible.
+        return $this->app->temporaryDirectory('export');
     }
 
     /**

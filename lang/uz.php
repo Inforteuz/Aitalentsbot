@@ -344,6 +344,8 @@ return [
     'admin.export_preparing'              => "⏳ Excel fayl tayyorlanmoqda…",
     'admin.export_ready'                  => "📥 :count ta ariza eksport qilindi.",
     'admin.export_empty'                  => "Eksport qilish uchun ariza yo‘q.",
+    'admin.export_failed'                 => "❌ Excel faylni tayyorlab bo‘lmadi.\n\n<b>Sabab:</b> <code>:reason</code>\n\nKo‘pincha bu <code>data/exports/</code> papkasiga yozish huquqi yo‘qligini bildiradi — unga 775 huquq bering. To‘liq xatolik <code>data/logs/</code> ichidagi jurnalda.",
+    'admin.export_no_upload'              => "❌ Fayl yuborib bo‘lmadi: serverda <code>curl</code> kengaytmasi o‘chirilgan, Telegram’ga fayl yuborish esa faqat shu orqali ishlaydi.\n\nHosting egasidan <code>curl</code> ni yoqishni so‘rang. Shu paytgacha arizalarni admin panelning <b>Eksport</b> bo‘limidan yuklab oling.",
     'admin.broadcast_prompt'              => "📣 Yubormoqchi bo‘lgan xabar matnini yozing.\n\nHTML formatlashdan foydalanishingiz mumkin: &lt;b&gt;qalin&lt;/b&gt;, &lt;i&gt;qiya&lt;/i&gt;, &lt;code&gt;kod&lt;/code&gt;.",
     'admin.broadcast_preview'             => "👀 <b>Xabar ko‘rinishi:</b>",
     'admin.broadcast_confirm'             => "Ushbu xabar :count ta foydalanuvchiga yuborilsinmi?",

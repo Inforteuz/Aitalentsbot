@@ -344,6 +344,8 @@ return [
     'admin.export_preparing'              => "⏳ Готовим Excel-файл…",
     'admin.export_ready'                  => "📥 Выгружено заявок: :count",
     'admin.export_empty'                  => "Нет заявок для выгрузки.",
+    'admin.export_failed'                 => "❌ Не удалось подготовить Excel-файл.\n\n<b>Причина:</b> <code>:reason</code>\n\nЧаще всего это означает, что папка <code>data/exports/</code> недоступна для записи — выдайте ей права 775. Полная ошибка — в журнале <code>data/logs/</code>.",
+    'admin.export_no_upload'              => "❌ Отправка файла невозможна: на сервере отключено расширение <code>curl</code>, а без него Telegram не примет файл.\n\nПопросите хостера включить <code>curl</code>. Пока что скачивайте заявки в разделе <b>Экспорт</b> админ-панели.",
     'admin.broadcast_prompt'              => "📣 Напишите текст сообщения для рассылки.\n\nМожно использовать HTML: &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;, &lt;code&gt;код&lt;/code&gt;.",
     'admin.broadcast_preview'             => "👀 <b>Предпросмотр сообщения:</b>",
     'admin.broadcast_confirm'             => "Отправить это сообщение :count пользователям?",

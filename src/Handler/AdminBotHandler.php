@@ -12,6 +12,7 @@ use AiTalents\Registration\Catalog;
 use AiTalents\Service\BroadcastService;
 use AiTalents\Telegram\ApiException;
 use AiTalents\Telegram\Keyboard;
+use AiTalents\Telegram\CurlTransport;
 use AiTalents\Telegram\Update;
 use AiTalents\Text;
 
@@ -469,6 +470,18 @@ final class AdminBotHandler
         $locale = $this->locale($user);
 
         // Callback answers are plain text — the markup of the phrase has to go.
+        // Telegram only accepts an uploaded document over a multipart request,
+        // which needs cURL. Saying so plainly beats a generic failure, because
+        // only the host can switch the extension back on.
+        if (!CurlTransport::supportsUploads()) {
+            $this->app->logger()->warning('XLSX export skipped: uploads need the curl extension');
+
+            $this->answer($u, '');
+            $this->send($chatId, Lang::t('admin.export_no_upload', $locale), $this->backExtra($locale));
+
+            return;
+        }
+
         $this->answer($u, strip_tags(Lang::t('admin.export_preparing', $locale)));
         $this->app->api()->sendChatAction($chatId, 'upload_document');
 
@@ -498,7 +511,11 @@ final class AdminBotHandler
                 'telegram_id' => $chatId,
             ]);
 
-            $this->send($chatId, Lang::t('error.file', $locale), $this->backExtra($locale));
+            $this->send(
+                $chatId,
+                Lang::t('admin.export_failed', $locale, ['reason' => $e->getMessage()]),
+                $this->backExtra($locale)
+            );
         } finally {
             $this->cleanTemporary($directory, $path);
         }
@@ -1075,14 +1092,10 @@ final class AdminBotHandler
      */
     private function temporaryDirectory(): string
     {
-        $root = defined('AITALENTS_ROOT') ? (string) AITALENTS_ROOT : dirname(__DIR__, 2);
-        $directory = $root . '/data/exports/' . bin2hex(random_bytes(6));
-
-        if (!is_dir($directory) && !mkdir($directory, 0775, true) && !is_dir($directory)) {
-            throw new \RuntimeException('Could not create the export directory ' . $directory . '.');
-        }
-
-        return $directory;
+        // App picks data/exports/ when it is writable and the system temp
+        // directory when it is not, so a permissions slip on the host does not
+        // make the export impossible.
+        return $this->app->temporaryDirectory('export');
     }
 
     /**
